@@ -103,16 +103,26 @@ verified swap:
 3. **Rename aside.** The current `plugins/<Name>/` is renamed to
    `plugins/.modmenu-previous-<Name>/`.
 4. **Rename in.** The staged copy is renamed to `plugins/<Name>/`. If that rename
-   fails, the previous copy is renamed back.
+   fails, the previous copy is renamed back (if even that fails, the message names
+   the `.modmenu-previous-<Name>` folder to rename back by hand). After a swap or a
+   rollback, every `.php` file of the copy now in place is invalidated in opcache
+   (when PHP allows it), so the next request runs the new code.
 5. **Clean up.** For other plugins the previous copy is deleted straight away. For
    ModMenu it is kept until the new version has loaded: on the next page load the new
    ModMenu registers, checks that the `plugin.json` on disk matches the version that
    is running, and deletes `.modmenu-previous-ModMenu`. While that folder exists the
-   Installed tab says an update was just installed.
+   Installed tab says an update was just installed. An old copy that cannot be
+   deleted (for example root-owned files) is moved to `plugins/.modmenu-trash-<16 hex
+   chars>/` instead, so it never blocks a later update; delete those folders on the
+   host when convenient.
 6. **Rollback.** If the new ModMenu throws while loading, the old copy is restored:
    the new one is parked in `plugins/.modmenu-failed-ModMenu/`,
    `.modmenu-previous-ModMenu` is renamed back to `plugins/ModMenu/`, and a critical
-   message is logged. The next request loads the old version again.
+   message is logged. The next request loads the old version again. Only the version
+   that failed is rolled back, so two requests failing at once do not undo each other.
+   If there is nothing to roll back to, or the rollback itself fails (both errors are
+   logged), ModMenu throws a `RuntimeException`: Kanboard's loader catches it and the
+   board keeps running without ModMenu instead of going down.
 
 **Bind mounts.** A bind-mounted plugin folder cannot be renamed, so step 3 fails:
 ModMenu reports that the folder may be a bind mount or read-only, and nothing is
