@@ -5,6 +5,7 @@ namespace Kanboard\Plugin\ModMenu\Controller;
 use Kanboard\Controller\BaseController;
 use Kanboard\Core\Controller\AccessForbiddenException;
 use Kanboard\Plugin\ModMenu\Model\PluginManager;
+use Kanboard\Plugin\ModMenu\Model\PluginSwap;
 use Kanboard\Plugin\ModMenu\Model\DirectoryClient;
 use Kanboard\Plugin\ModMenu\Model\SourceRepository;
 use Kanboard\Plugin\ModMenu\Model\DependencyResolver;
@@ -207,8 +208,27 @@ class ModMenuController extends BaseController
         $this->requireAdmin();
         $this->checkCSRFForm();
         $url = $this->postValue('archive_url');
-        $this->runAndFlash(fn (PluginManager $m) => $m->installFromUrl($url), t('Plugin updated.'), '', true);
-        $this->response->redirect($this->helper->url->to('ModMenuController', 'directory', ['plugin' => 'ModMenu']));
+        $manager = $this->manager();
+        try {
+            $name = $manager->installFromUrl($url);
+        } catch (ModMenuException $e) {
+            $this->flash->failure($e->getMessage());
+            $this->backToDirectory();
+            return;
+        }
+
+        if ($name === PluginManager::SELF) {
+            // The files on disk are now the new ModMenu: use only classes this
+            // request already loaded (no conflict warning, no new models).
+            $version = (string) PluginSwap::readVersion(PLUGINS_DIR . '/' . PluginManager::SELF);
+            $this->flash->success(t('ModMenu updated to %s. The previous copy is removed once the new version has loaded.', $version));
+            $this->backToInstalled();
+            return;
+        }
+
+        $warning = $manager->conflictWarning($name);
+        $this->flash->success($warning === '' ? t('Plugin updated.') : t('Plugin updated.') . ' ' . $warning);
+        $this->backToDirectory();
     }
 
     // ── dependency helpers ──────────────────────────────────────────────────
