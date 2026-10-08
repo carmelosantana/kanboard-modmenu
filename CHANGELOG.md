@@ -5,6 +5,14 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.2.0] — 2026-10-08
+
+### Added
+
+- **Plugin conflicts.** A plugin can list `conflicts` (plugin names) in `plugin.json`, mirrored in the directory `plugins.json`. ModMenu warns when you install or enable a plugin whose conflict is active, and flags conflicting pairs on the Installed and Browse tabs. It never blocks.
+
+---
+
 ## [1.1.0] — 2026-07-09
 
 ### Added

@@ -129,6 +129,7 @@ Each entry in the JSON array is an object. All fields are optional except `name`
 | `screenshots` | array | List of screenshot URLs (or paths relative to the `plugins.json` URL). Displayed as thumbnails in the Browse tab. |
 | `requires` | array | Hard dependencies — dep objects `{ "plugin": "Name", "min_version": "1.1.0" }`. ModMenu blocks activation until each is installed, active, and ≥ `min_version`, offering a one-click resolve. Reverse-protected: a required plugin can't be disabled/removed while an active dependent needs it. |
 | `recommends` | array | Soft dependencies — same dep-object shape plus an optional `"reason"`. Non-blocking: ModMenu shows a "works better with" hint and a one-click install, but activation proceeds without them. |
+| `conflicts` | array | Plugin names that should not run alongside this one (e.g. two themes), like `["ShadcnTheme"]`. Non-blocking: ModMenu warns on install/enable and flags active pairs on the Installed and Browse tabs. |
 
 ### Dependencies
 
@@ -144,7 +145,8 @@ A plugin declares dependencies on other plugins in its own `plugin.json` (author
 
 - **`requires`** blocks enable/install until satisfied (with a one-click resolve that installs/enables the chain), and blocks disable/uninstall of anything an active plugin still needs.
 - **`recommends`** only prompts an easy install; it never blocks.
-- Both are optional and backward-compatible — a plugin without them behaves exactly as before.
+- **`conflicts`** only warns (on install, enable, and on the Installed/Browse tabs); it never blocks.
+- All three are optional and backward-compatible — a plugin without them behaves exactly as before.
 
 Example:
 
