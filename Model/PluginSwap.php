@@ -113,9 +113,20 @@ class PluginSwap
         return $staged ?? '';
     }
 
-    /** @throws ModMenuException with the relative path and line of the first ParseError/CompileError */
+    /**
+     * Syntax-check every .php file without executing it: token_get_all(TOKEN_PARSE)
+     * when the tokenizer extension is loaded, else OPcache's compiler when it is
+     * enabled for this SAPI, else no check (the load guard in Plugin.php still
+     * rolls back an \Error thrown while the new copy registers).
+     *
+     * @throws ModMenuException with the relative path and line of the first ParseError/CompileError
+     */
     private function assertPhpParses(string $stagedDir, string $name): void
     {
+        $useTokenizer = $this->hasTokenizer();
+        if (! $useTokenizer && ! $this->canOpcacheCompile()) {
+            return;
+        }
         $files = new \RecursiveIteratorIterator(
             new \RecursiveDirectoryIterator($stagedDir, \FilesystemIterator::SKIP_DOTS)
         );
@@ -125,12 +136,29 @@ class PluginSwap
             }
             $path = $file->getPathname();
             try {
-                token_get_all((string) file_get_contents($path), TOKEN_PARSE);
+                if ($useTokenizer) {
+                    token_get_all((string) file_get_contents($path), TOKEN_PARSE);
+                } else {
+                    @opcache_compile_file($path); // false (e.g. opcache.restrict_api) = could not check, not a failure
+                }
             } catch (\CompileError $e) { // ParseError extends CompileError; both are load-fatal
                 $relative = substr($path, strlen($stagedDir) + 1);
                 throw new ModMenuException(t('The new %s has a PHP syntax error in %s on line %d.', $name, $relative, $e->getLine()));
             }
         }
+    }
+
+    /** Whether the tokenizer extension is loaded (the official Kanboard Docker image lacks it). */
+    protected function hasTokenizer(): bool
+    {
+        return function_exists('token_get_all');
+    }
+
+    /** Whether opcache_compile_file() exists and OPcache is enabled for this SAPI. */
+    protected function canOpcacheCompile(): bool
+    {
+        return function_exists('opcache_compile_file')
+            && (bool) ini_get(PHP_SAPI === 'cli' ? 'opcache.enable_cli' : 'opcache.enable');
     }
 
     /**

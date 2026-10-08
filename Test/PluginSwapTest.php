@@ -191,6 +191,79 @@ class PluginSwapTest extends Base
         $this->assertThrowsMessage(fn() => $this->swap->verify($staged, 'Alpha'), 'Model/Y.php');
     }
 
+    /** A PluginSwap whose syntax checker choice is forced (null = real detection). */
+    private function swapWith(?bool $tokenizer, ?bool $opcache): PluginSwap
+    {
+        return new class($this->plugins, $tokenizer, $opcache) extends PluginSwap {
+            public function __construct(string $dir, private ?bool $tok, private ?bool $opc)
+            {
+                parent::__construct($dir);
+            }
+            protected function hasTokenizer(): bool
+            {
+                return $this->tok ?? parent::hasTokenizer();
+            }
+            protected function canOpcacheCompile(): bool
+            {
+                return $this->opc ?? parent::canOpcacheCompile();
+            }
+        };
+    }
+
+    /** A PluginSwap forced onto the OPcache path; skips when opcache cannot compile in this CLI. */
+    private function opcacheSwap(): PluginSwap
+    {
+        $swap = $this->swapWith(false, null);
+        $probe = new \ReflectionMethod(PluginSwap::class, 'canOpcacheCompile');
+        if (! $probe->invoke($swap)) {
+            $this->markTestSkipped('OPcache cannot compile in this CLI (run with -d opcache.enable_cli=1).');
+        }
+        return $swap;
+    }
+
+    public function testVerifyOpcachePathAcceptsValidFiles()
+    {
+        $swap = $this->opcacheSwap();
+        $staged = $this->stage('Alpha', '1.3.0');
+        mkdir("$staged/Model", 0777, true);
+        file_put_contents("$staged/Model/X.php", "<?php\nclass PluginSwapOpcacheValid {}\n");
+        $this->assertSame('1.3.0', $swap->verify($staged, 'Alpha'));
+    }
+
+    public function testVerifyOpcachePathFailsOnSyntaxErrorWithPath()
+    {
+        $swap = $this->opcacheSwap();
+        $staged = $this->stage('Alpha', '1.3.0');
+        mkdir("$staged/Model", 0777, true);
+        file_put_contents("$staged/Model/X.php", "<?php\nclass X {\n  public function (\n}\n");
+        $this->assertThrowsMessage(fn() => $swap->verify($staged, 'Alpha'), 'Model/X.php on line 3');
+    }
+
+    public function testVerifyOpcachePathFailsOnCompileErrorWithPath()
+    {
+        $swap = $this->opcacheSwap();
+        $staged = $this->stage('Alpha', '1.3.0');
+        mkdir("$staged/Model", 0777, true);
+        file_put_contents("$staged/Model/Y.php", "<?php class A { public public \$x; }");
+        $this->assertThrowsMessage(fn() => $swap->verify($staged, 'Alpha'), 'Model/Y.php');
+    }
+
+    public function testVerifyWithoutAnyCheckerLetsBrokenFileThrough()
+    {
+        $swap = $this->swapWith(false, false);
+        $staged = $this->stage('Alpha', '1.3.0');
+        mkdir("$staged/Model", 0777, true);
+        file_put_contents("$staged/Model/X.php", "<?php\nclass X {\n  public function (\n}\n");
+        $this->assertSame('1.3.0', $swap->verify($staged, 'Alpha'));
+    }
+
+    public function testCanOpcacheCompileFollowsSapiIniSetting()
+    {
+        $probe = new \ReflectionMethod(PluginSwap::class, 'canOpcacheCompile');
+        $expected = function_exists('opcache_compile_file') && (bool) ini_get(PHP_SAPI === 'cli' ? 'opcache.enable_cli' : 'opcache.enable');
+        $this->assertSame($expected, $probe->invoke($this->swap));
+    }
+
     public function testVerifyFailsWhenPhpVersionTooLow()
     {
         $staged = $this->stage('Alpha', '1.3.0', ['php_version' => '>=99.0']);
