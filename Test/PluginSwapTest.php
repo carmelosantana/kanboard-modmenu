@@ -31,6 +31,7 @@ class PluginSwapTest extends Base
     private function rrmdir(string $d): void
     {
         if (! is_dir($d)) { return; }
+        @chmod($d, 0777);
         foreach (scandir($d) as $f) {
             if ($f === '.' || $f === '..') { continue; }
             $p = "$d/$f";
@@ -60,6 +61,26 @@ class PluginSwapTest extends Base
     private function installed(string $name, string $version): string
     {
         return $this->makePlugin("{$this->plugins}/$name", $name, ['name' => $name, 'version' => $version]);
+    }
+
+    private function skipAsRoot(): void
+    {
+        if (function_exists('posix_geteuid') && posix_geteuid() === 0) {
+            $this->markTestSkipped('chmod-based permission simulation does not apply to root.');
+        }
+    }
+
+    /** Give $dir a subdirectory whose file cannot be deleted (like a root-owned old copy). */
+    private function makeUndeletable(string $dir): void
+    {
+        mkdir("$dir/Locked", 0777, true);
+        file_put_contents("$dir/Locked/X.php", '<?php');
+        chmod("$dir/Locked", 0555);
+    }
+
+    private function trashDirs(): array
+    {
+        return glob($this->plugins . '/.modmenu-trash-*') ?: [];
     }
 
     private function assertThrowsMessage(callable $fn, string $needle): void
@@ -103,6 +124,16 @@ class PluginSwapTest extends Base
         $this->assertTrue(PluginSwap::removeTree($dir));
         $this->assertDirectoryDoesNotExist($dir);
         $this->assertTrue(PluginSwap::removeTree($dir));
+    }
+
+    public function testInvalidateOpcacheVisitsEveryPhpFile()
+    {
+        $dir = $this->installed('Alpha', '1.0.0');
+        mkdir("$dir/Model/Deep", 0777, true);
+        file_put_contents("$dir/Model/Deep/X.php", '<?php');
+        file_put_contents("$dir/Model/README.md", 'not php');
+        $this->assertSame(2, PluginSwap::invalidateOpcache($dir));
+        $this->assertSame(0, PluginSwap::invalidateOpcache($this->plugins . '/Nope'));
     }
 
     // ---- verify ---------------------------------------------------------
@@ -266,6 +297,43 @@ class PluginSwapTest extends Base
         $this->assertDirectoryDoesNotExist($this->swap->previousDir('Alpha'));
     }
 
+    public function testSwapMovesUndeletableStalePreviousToTrash()
+    {
+        $this->skipAsRoot();
+        $this->installed('Alpha', '1.0.0');
+        $this->makeUndeletable($this->makePlugin($this->swap->previousDir('Alpha'), 'Alpha', ['version' => '0.1.0']));
+        $this->swap->swap($this->stage('Alpha', '1.1.0'), 'Alpha', true);
+        $this->assertSame('1.1.0', PluginSwap::readVersion("{$this->plugins}/Alpha"));
+        $this->assertSame('1.0.0', PluginSwap::readVersion($this->swap->previousDir('Alpha')));
+        $this->assertCount(1, $this->trashDirs());
+        $this->assertMatchesRegularExpression('/^\.modmenu-trash-[0-9a-f]{16}$/', basename($this->trashDirs()[0]));
+    }
+
+    public function testSwapWithoutKeepingPreviousMovesUndeletableCopyToTrash()
+    {
+        $this->skipAsRoot();
+        $this->makeUndeletable($this->installed('Alpha', '1.0.0'));
+        $this->swap->swap($this->stage('Alpha', '1.1.0'), 'Alpha', false);
+        $this->assertSame('1.1.0', PluginSwap::readVersion("{$this->plugins}/Alpha"));
+        $this->assertDirectoryDoesNotExist($this->swap->previousDir('Alpha'));
+        $this->assertCount(1, $this->trashDirs());
+    }
+
+    public function testSwapThrowsWhenStalePreviousCanBeNeitherDeletedNorMoved()
+    {
+        $this->skipAsRoot();
+        $this->installed('Alpha', '1.0.0');
+        $this->makePlugin($this->swap->previousDir('Alpha'), 'Alpha', ['version' => '0.1.0']);
+        $staged = $this->stage('Alpha', '1.1.0');
+        chmod($this->plugins, 0555);
+        try {
+            $this->assertThrowsMessage(fn() => $this->swap->swap($staged, 'Alpha', true), 'stale previous copy');
+        } finally {
+            chmod($this->plugins, 0777);
+        }
+        $this->assertSame('1.0.0', PluginSwap::readVersion("{$this->plugins}/Alpha"));
+    }
+
     // ---- finalize -------------------------------------------------------
 
     public function testFinalizeRemovesPreviousWhenRunningVersionMatchesDisk()
@@ -290,6 +358,32 @@ class PluginSwapTest extends Base
         $this->assertDirectoryExists($this->swap->previousDir('Alpha'));
     }
 
+    public function testFinalizeMovesUndeletablePreviousToTrash()
+    {
+        $this->skipAsRoot();
+        $this->installed('Alpha', '1.0.0');
+        $this->swap->swap($this->stage('Alpha', '1.1.0'), 'Alpha', true);
+        $this->makeUndeletable($this->swap->previousDir('Alpha'));
+        $this->assertTrue($this->swap->finalize('Alpha', '1.1.0'));
+        $this->assertDirectoryDoesNotExist($this->swap->previousDir('Alpha'));
+        $this->assertCount(1, $this->trashDirs());
+    }
+
+    public function testFinalizeFalseWhenPreviousCanBeNeitherDeletedNorMoved()
+    {
+        $this->skipAsRoot();
+        $this->installed('Alpha', '1.0.0');
+        $this->swap->swap($this->stage('Alpha', '1.1.0'), 'Alpha', true);
+        chmod($this->plugins, 0555);
+        try {
+            $result = $this->swap->finalize('Alpha', '1.1.0');
+        } finally {
+            chmod($this->plugins, 0777);
+        }
+        $this->assertFalse($result);
+        $this->assertDirectoryExists($this->swap->previousDir('Alpha'));
+    }
+
     // ---- rollback -------------------------------------------------------
 
     public function testRollbackRestoresPreviousAndParksNewAsFailed()
@@ -308,5 +402,23 @@ class PluginSwapTest extends Base
         $this->installed('Alpha', '1.1.0');
         $this->assertFalse($this->swap->rollback('Alpha'));
         $this->assertSame('1.1.0', PluginSwap::readVersion("{$this->plugins}/Alpha"));
+    }
+
+    public function testRollbackWithFailingVersionRestoresWhenDiskMatches()
+    {
+        $this->installed('Alpha', '1.0.0');
+        $this->swap->swap($this->stage('Alpha', '1.1.0'), 'Alpha', true);
+        $this->assertTrue($this->swap->rollback('Alpha', '1.1.0'));
+        $this->assertSame('1.0.0', PluginSwap::readVersion("{$this->plugins}/Alpha"));
+    }
+
+    public function testRollbackWithFailingVersionIsNoOpWhenDiskDiffers()
+    {
+        $this->installed('Alpha', '1.0.0');
+        $this->swap->swap($this->stage('Alpha', '1.1.0'), 'Alpha', true);
+        $this->assertFalse($this->swap->rollback('Alpha', '1.0.0'));
+        $this->assertSame('1.1.0', PluginSwap::readVersion("{$this->plugins}/Alpha"));
+        $this->assertSame('1.0.0', PluginSwap::readVersion($this->swap->previousDir('Alpha')));
+        $this->assertDirectoryDoesNotExist("{$this->plugins}/.modmenu-failed-Alpha");
     }
 }

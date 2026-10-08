@@ -12,6 +12,8 @@ use Kanboard\Plugin\ModMenu\Exception\ModMenuException;
  *   .modmenu-staging-<16 hex>   staging parent; the archive extracts to <staging>/<Name>
  *   .modmenu-previous-<Name>    the copy that was replaced, kept until finalize()
  *   .modmenu-failed-<Name>      the new copy parked by rollback()
+ *   .modmenu-trash-<16 hex>     an old copy that could not be deleted (e.g. root-owned
+ *                               files); moved aside so it never blocks a later update
  *
  * Dependency rule: this file may use only PHP builtins, Kanboard's global t(),
  * ModMenuException and (guarded) Kanboard\Core\Plugin\Version. A companion
@@ -139,10 +141,14 @@ class PluginSwap
      */
     public function swap(string $stagedDir, string $name, bool $keepPrevious): void
     {
+        // Load the exception class now: once the current copy is moved aside,
+        // autoloading it from <pluginsDir>/<Name> would fail.
+        class_exists(ModMenuException::class);
+
         $target = $this->targetDir($name);
         $prev = $this->previousDir($name);
 
-        if (file_exists($prev) && ! self::removeTree($prev)) {
+        if (file_exists($prev) && ! $this->discard($prev)) {
             throw new ModMenuException(t('Could not remove the stale previous copy of %s.', $name));
         }
 
@@ -150,6 +156,7 @@ class PluginSwap
             if (! @rename($stagedDir, $target)) {
                 throw new ModMenuException(t('Could not move the new %s into place.', $name));
             }
+            self::invalidateOpcache($target);
             return;
         }
 
@@ -158,18 +165,23 @@ class PluginSwap
         }
 
         if (! @rename($stagedDir, $target)) {
-            @rename($prev, $target);
+            if (! @rename($prev, $target)) {
+                throw new ModMenuException(t('Could not move the new %s into place, and the previous version could NOT be restored: it is in %s. Rename that folder back to %s.', $name, basename($prev), $name));
+            }
             throw new ModMenuException(t('Could not move the new %s into place; the previous version was restored.', $name));
         }
 
+        self::invalidateOpcache($target);
+
         if (! $keepPrevious) {
-            self::removeTree($prev); // failure is harmless: the dot dir is never loaded
+            $this->discard($prev); // the swap succeeded; a leftover dot dir is never loaded and is discarded by the next swap
         }
     }
 
     /**
      * The new copy has loaded: drop the previous copy, but only when the
-     * caller is the copy now on disk.
+     * caller is the copy now on disk. True only when previousDir() is gone
+     * (deleted, or moved to a trash dir).
      */
     public function finalize(string $name, string $runningVersion): bool
     {
@@ -177,16 +189,17 @@ class PluginSwap
         if (! file_exists($prev) || self::readVersion($this->targetDir($name)) !== $runningVersion) {
             return false;
         }
-        self::removeTree($prev);
-        return true;
+        return $this->discard($prev);
     }
 
     /**
      * Restore previousDir() and park the current copy in .modmenu-failed-<Name>.
+     * With $failingVersion, do nothing unless that is the version on disk (a
+     * concurrent request may already have rolled back or replaced it).
      *
      * @throws ModMenuException when the restore rename fails
      */
-    public function rollback(string $name): bool
+    public function rollback(string $name, ?string $failingVersion = null): bool
     {
         $prev = $this->previousDir($name);
         if (! file_exists($prev)) {
@@ -194,10 +207,14 @@ class PluginSwap
         }
 
         $target = $this->targetDir($name);
+        if ($failingVersion !== null && self::readVersion($target) !== $failingVersion) {
+            return false;
+        }
+
         $failed = $this->failedDir($name);
 
         if (file_exists($failed)) {
-            self::removeTree($failed);
+            $this->discard($failed);
         }
         if (file_exists($target)) {
             @rename($target, $failed);
@@ -205,7 +222,47 @@ class PluginSwap
         if (! @rename($prev, $target)) {
             throw new ModMenuException(t('Could not restore the previous version of %s.', $name));
         }
+        self::invalidateOpcache($target);
         return true;
+    }
+
+    /**
+     * Delete $dir; when that fails (e.g. a root-owned subdirectory), move it
+     * to a unique .modmenu-trash-<16 hex> dir in the plugins dir, which needs
+     * write access to the plugins dir only. True when $dir no longer exists.
+     */
+    private function discard(string $dir): bool
+    {
+        if (self::removeTree($dir)) {
+            return true;
+        }
+        return @rename($dir, $this->pluginsDir . '/.modmenu-trash-' . bin2hex(random_bytes(8)));
+    }
+
+    /**
+     * Drop every .php file under $dir from opcache so the next request runs
+     * the copy now on disk. Returns the number of .php files visited.
+     */
+    public static function invalidateOpcache(string $dir): int
+    {
+        if (! is_dir($dir)) {
+            return 0;
+        }
+        $canInvalidate = function_exists('opcache_invalidate');
+        $count = 0;
+        $files = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($dir, \FilesystemIterator::SKIP_DOTS)
+        );
+        foreach ($files as $file) {
+            if (! $file->isFile() || strtolower($file->getExtension()) !== 'php') {
+                continue;
+            }
+            $count++;
+            if ($canInvalidate) {
+                @opcache_invalidate($file->getPathname(), true); // @: opcache.restrict_api may forbid it
+            }
+        }
+        return $count;
     }
 
     /** Recursively delete a directory; true when it no longer exists. */
