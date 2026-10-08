@@ -470,6 +470,31 @@ class PluginSwapTest extends Base
         $this->assertDirectoryDoesNotExist($this->swap->previousDir('Alpha'));
     }
 
+    public function testRollbackLoadsExceptionClassBeforeMovingAnything()
+    {
+        // A fresh process: the autoloader serves ModMenuException from <plugins>/ModMenu,
+        // as Kanboard's PSR-4 does, and records whether that copy was still in place.
+        $this->installed('ModMenu', '1.0.0');
+        $this->swap->swap($this->stage('ModMenu', '1.1.0'), 'ModMenu', true);
+        $script = $this->root . '/rollback.php';
+        file_put_contents($script, sprintf(<<<'PHP'
+<?php
+function t($s, ...$a) { return vsprintf($s, $a); }
+$plugins = %s;
+spl_autoload_register(function ($class) use ($plugins) {
+    if ($class === 'Kanboard\\Plugin\\ModMenu\\Exception\\ModMenuException') {
+        echo is_file("$plugins/ModMenu/plugin.json") ? 'loaded-in-place ' : 'loaded-after-move ';
+        require %s;
+    }
+});
+require %s;
+$swap = new Kanboard\Plugin\ModMenu\Model\PluginSwap($plugins);
+var_export($swap->rollback('ModMenu'));
+PHP, var_export($this->plugins, true), var_export(dirname(__DIR__) . '/Exception/ModMenuException.php', true), var_export(dirname(__DIR__) . '/Model/PluginSwap.php', true)));
+        $out = shell_exec(escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg($script) . ' 2>&1');
+        $this->assertSame('loaded-in-place true', $out);
+    }
+
     public function testRollbackWithoutPreviousReturnsFalse()
     {
         $this->installed('Alpha', '1.1.0');

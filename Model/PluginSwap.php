@@ -229,6 +229,9 @@ class PluginSwap
      */
     public function rollback(string $name, ?string $failingVersion = null): bool
     {
+        // As in swap(): load the exception class before the current copy can move.
+        class_exists(ModMenuException::class);
+
         $prev = $this->previousDir($name);
         if (! file_exists($prev)) {
             return false;
