@@ -451,4 +451,88 @@ class PluginManagerTest extends Base
         $this->assertTrue($check['satisfied']);
         $this->assertFalse($check['blocked']);
     }
+    // ── staged, verified installs (PluginSwap) ─────────────────────────────
+
+    private function makeZip(string $name, string $version, ?string $pluginPhp = null): string
+    {
+        $zipPath = $this->root . '/' . $name . '-' . $version . '-' . uniqid() . '.zip';
+        $zip = new ZipArchive();
+        $zip->open($zipPath, ZipArchive::CREATE);
+        $zip->addFromString("$name/Plugin.php", $pluginPhp ?? "<?php\nnamespace Kanboard\\Plugin\\$name;\n");
+        $zip->addFromString("$name/plugin.json", json_encode(['name' => $name, 'version' => $version]));
+        $zip->close();
+        return $zipPath;
+    }
+
+    private function seedNamespaced(string $name, string $version): void
+    {
+        mkdir("{$this->active}/$name", 0777, true);
+        file_put_contents("{$this->active}/$name/Plugin.php", "<?php\nnamespace Kanboard\\Plugin\\$name;\n");
+        file_put_contents("{$this->active}/$name/plugin.json", json_encode(['name' => $name, 'version' => $version]));
+    }
+
+    private function dotDirs(string $prefix): array
+    {
+        return array_values(array_filter(scandir($this->active), static fn ($f) => str_starts_with($f, $prefix)));
+    }
+
+    public function testNewerModMenuZipInstallsAndKeepsPreviousCopy()
+    {
+        $this->seedNamespaced('ModMenu', '1.2.1');
+        $this->assertFalse($this->manager->isSelfUpdatePending());
+
+        $this->assertSame('ModMenu', $this->manager->installFromFile($this->makeZip('ModMenu', '1.3.0')));
+
+        $this->assertStringContainsString('1.3.0', file_get_contents("{$this->active}/ModMenu/plugin.json"));
+        $this->assertDirectoryExists("{$this->active}/.modmenu-previous-ModMenu");
+        $this->assertStringContainsString('1.2.1', file_get_contents("{$this->active}/.modmenu-previous-ModMenu/plugin.json"));
+        $this->assertTrue($this->manager->isSelfUpdatePending());
+        $this->assertSame([], $this->dotDirs('.modmenu-staging-'));
+    }
+
+    public function testSameVersionModMenuZipIsRefusedAndInstalledCopyUntouched()
+    {
+        $this->seedNamespaced('ModMenu', '1.2.1');
+        $before = file_get_contents("{$this->active}/ModMenu/Plugin.php");
+        try {
+            $this->manager->installFromFile($this->makeZip('ModMenu', '1.2.1', "<?php\nnamespace Kanboard\\Plugin\\ModMenu;\n// new\n"));
+            $this->fail('expected ModMenuException');
+        } catch (ModMenuException $e) {
+            $this->assertStringContainsString('not newer', $e->getMessage());
+        }
+        $this->assertSame($before, file_get_contents("{$this->active}/ModMenu/Plugin.php"));
+        $this->assertDirectoryDoesNotExist("{$this->active}/.modmenu-previous-ModMenu");
+        $this->assertFalse($this->manager->isSelfUpdatePending());
+        $this->assertSame([], $this->dotDirs('.modmenu-staging-'));
+    }
+
+    public function testUpdatingNormalPluginLeavesNoPreviousOrStagingDir()
+    {
+        $this->seedNamespaced('Alpha', '1.0.0');
+        $this->assertSame('Alpha', $this->manager->installFromFile($this->makeZip('Alpha', '1.1.0')));
+        $this->assertStringContainsString('1.1.0', file_get_contents("{$this->active}/Alpha/plugin.json"));
+        $this->assertSame([], $this->dotDirs('.modmenu-'));
+    }
+
+    public function testFreshInstallOfNormalPluginLeavesNoDotDirs()
+    {
+        $this->assertSame('Alpha', $this->manager->installFromFile($this->makeZip('Alpha', '1.0.0')));
+        $this->assertFileExists("{$this->active}/Alpha/Plugin.php");
+        $this->assertSame([], $this->dotDirs('.modmenu-'));
+    }
+
+    public function testNormalPluginZipWithSyntaxErrorIsRefusedAndOldVersionStaysIntact()
+    {
+        $this->seedNamespaced('Alpha', '1.0.0');
+        $before = file_get_contents("{$this->active}/Alpha/Plugin.php");
+        try {
+            $this->manager->installFromFile($this->makeZip('Alpha', '1.1.0', "<?php\nnamespace Kanboard\\Plugin\\Alpha;\nfunction (\n"));
+            $this->fail('expected ModMenuException');
+        } catch (ModMenuException $e) {
+            $this->assertStringContainsString('syntax error', $e->getMessage());
+        }
+        $this->assertSame($before, file_get_contents("{$this->active}/Alpha/Plugin.php"));
+        $this->assertStringContainsString('1.0.0', file_get_contents("{$this->active}/Alpha/plugin.json"));
+        $this->assertSame([], $this->dotDirs('.modmenu-'));
+    }
 }

@@ -8,7 +8,9 @@ use Kanboard\Plugin\ModMenu\Exception\ModMenuException;
 /**
  * The ModMenu engine: enumerate installed plugins (active + disabled),
  * enable/disable by moving folders, uninstall, and install from a URL or
- * uploaded file. Never touches ModMenu itself.
+ * uploaded file. Every install/update is staged and verified (PluginSwap)
+ * before it replaces anything. ModMenu updates itself through that same
+ * verified swap, but never disables or removes itself.
  *
  * "Installed" state needs no DB table: a plugin is ACTIVE if its folder is in
  * PLUGINS_DIR (loaded by Kanboard at bootstrap) and DISABLED if its folder is
@@ -147,8 +149,11 @@ class PluginManager extends Base
     // ── internals ──────────────────────────────────────────────────────────
 
     /**
-     * Validate the archive, then install it. If an ACTIVE plugin of the same
-     * name exists it is replaced (update path). A DISABLED copy blocks install.
+     * Validate the archive, extract it to a staging dir inside the plugins dir,
+     * verify the staged copy, then swap it into place. If an ACTIVE plugin of
+     * the same name exists it is replaced (update path). A DISABLED copy blocks
+     * install. ModMenu itself must be newer than the installed copy, and keeps
+     * its previous copy until the new version has loaded (Plugin::initialize).
      */
     private function installArchive(string $zipPath): string
     {
@@ -156,20 +161,36 @@ class PluginManager extends Base
         $name = $archive->inspect($zipPath);
 
         $this->guardName($name);
-        if ($name === self::SELF) {
-            throw new ModMenuException(t('ModMenu cannot install over itself.'));
-        }
 
         if (is_dir($this->disabledDir() . '/' . $name)) {
             throw new ModMenuException(t('"%s" is already installed but disabled. Enable it instead.', $name));
         }
 
-        $existing = $this->activeDir() . '/' . $name;
-        if (is_dir($existing) && ! $this->removeTree($existing)) {
-            throw new ModMenuException(t('Could not replace the existing "%s" (folder may be a bind mount).', $name));
+        $swap = new PluginSwap($this->activeDir());
+        $staging = $swap->createStaging();
+        try {
+            $archive->extractTo($zipPath, $staging);
+            $staged = $staging . '/' . $name;
+            $isSelf = $name === self::SELF;
+            $swap->verify($staged, $name, $isSelf ? $this->installedVersion(self::SELF) : null);
+            $swap->swap($staged, $name, $isSelf);
+        } finally {
+            PluginSwap::removeTree($staging);
         }
 
-        return $archive->extractTo($zipPath, $this->activeDir());
+        return $name;
+    }
+
+    /** True while ModMenu's previous copy waits for the new version to load. */
+    public function isSelfUpdatePending(): bool
+    {
+        return is_dir((new PluginSwap($this->activeDir()))->previousDir(self::SELF));
+    }
+
+    /** Version of an ACTIVE plugin from its plugin.json, '0.0.0' if unreadable. */
+    private function installedVersion(string $name): string
+    {
+        return PluginSwap::readVersion($this->activeDir() . '/' . $name) ?? '0.0.0';
     }
 
     private function move(string $name, string $from, string $to): void
