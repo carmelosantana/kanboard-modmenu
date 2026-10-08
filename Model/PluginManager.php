@@ -255,7 +255,8 @@ class PluginManager extends Base
 
         $out = [];
         foreach (scandir($dir) as $entry) {
-            if ($entry === '.' || $entry === '..') { continue; }
+            // Like Kanboard's loader, skip every dot entry (incl. ModMenu's .modmenu-* working folders).
+            if (str_starts_with($entry, '.')) { continue; }
             $path = $dir . '/' . $entry;
             if (! is_dir($path) || ! is_file($path . '/Plugin.php')) { continue; }
 
