@@ -13,6 +13,7 @@ class ConflictTemplateTest extends Base
     {
         $html = $this->container['template']->render('ModMenu:settings/installed', [
             'tab' => 'installed', 'is_configured' => true, 'not_configured_reason' => '', 'self_name' => 'ModMenu',
+            'self_update_pending' => false, 'plugin_installer_enabled' => false,
             'plugins' => [[
                 'name' => 'BattleLobby', 'title' => 'Battle Lobby', 'version' => '1.0.0', 'author' => '', 'description' => '',
                 'status' => 'active', 'unmet_deps' => [], 'active_conflicts' => ['ShadcnTheme'],
@@ -26,6 +27,7 @@ class ConflictTemplateTest extends Base
     {
         $html = $this->container['template']->render('ModMenu:settings/installed', [
             'tab' => 'installed', 'is_configured' => true, 'not_configured_reason' => '', 'self_name' => 'ModMenu',
+            'self_update_pending' => false, 'plugin_installer_enabled' => false,
             'plugins' => [[
                 'name' => 'Plain', 'title' => 'Plain', 'version' => '1.0.0', 'author' => '', 'description' => '',
                 'status' => 'active', 'unmet_deps' => [], 'active_conflicts' => [],

@@ -5,6 +5,10 @@
     <?= $this->render('ModMenu:settings/not_configured', ['reason' => $not_configured_reason]) ?>
 <?php endif ?>
 
+<?php if (! $plugin_installer_enabled): ?>
+    <p class="alert alert-info"><?= $this->text->e(t('Kanboard\'s built-in plugin installer is off (PLUGIN_INSTALLER = false, the default). ModMenu is a separate installer for administrators: it keeps working while the plugins folder is writable and the PHP zip extension is loaded.')) ?></p>
+<?php endif ?>
+
 <?php if (empty($plugins)): ?>
     <p class="alert"><?= t('No plugins found.') ?></p>
 <?php else: ?>
@@ -86,7 +90,10 @@
                         ['plugin' => 'ModMenu', 'name' => $this->text->e($p['name'])], false, 'js-modal-confirm btn btn-red') ?>
                 </div>
             <?php else: ?>
-                <div class="modmenu-card__status"><em><?= t('This is ModMenu itself and cannot be disabled or removed here.') ?></em></div>
+                <div class="modmenu-card__status"><em><?= t('This is ModMenu itself. It cannot be disabled or removed here. Update it from Browse.') ?></em></div>
+                <?php if ($self_update_pending): ?>
+                    <div class="modmenu-card__status"><?= t('An update was just installed; the previous copy is removed on the next page load.') ?></div>
+                <?php endif ?>
             <?php endif ?>
         </div>
     <?php endforeach ?>

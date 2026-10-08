@@ -56,6 +56,8 @@ class ModMenuController extends BaseController
             'is_configured' => $manager->isConfigured(),
             'not_configured_reason' => $manager->notConfiguredReason(),
             'self_name' => PluginManager::SELF,
+            'self_update_pending' => $manager->isSelfUpdatePending(),
+            'plugin_installer_enabled' => (bool) PLUGIN_INSTALLER,
         ]));
     }
 
