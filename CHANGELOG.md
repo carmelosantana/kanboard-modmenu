@@ -5,6 +5,14 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.2.1] — 2026-10-08
+
+### Fixed
+
+- **Badges readable on dark themes.** The Installed and Disabled badges now set their own text colour, so a dark theme's light body text no longer lands on their light background.
+
+---
+
 ## [1.2.0] — 2026-10-08
 
 ### Added
