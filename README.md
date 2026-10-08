@@ -84,6 +84,69 @@ cause is clear.
 
 ---
 
+## Self-update
+
+ModMenu updates itself the same way it updates any other plugin: **Browse → Update**
+on the ModMenu entry. Every install and update (from Browse or Upload) is a staged,
+verified swap:
+
+1. **Stage.** The archive is extracted into `plugins/.modmenu-staging-<16 hex chars>/<Name>/`.
+   The staging folder sits inside `plugins/`, so the later renames stay on one
+   filesystem and are atomic. Its name starts with a dot, and Kanboard's plugin
+   loader skips dot folders, so a half-written copy is never loaded. The staging
+   folder is always removed afterwards.
+2. **Verify.** The staged copy must have a `Plugin.php` that declares the namespace
+   `Kanboard\Plugin\<Name>`, every `.php` file must parse, and its `plugin.json`
+   `php_version` and `compatible_version` (when present) must match this server.
+   For ModMenu itself the staged version must also be newer than the installed one.
+   Any failure stops here with a message, and the installed copy is untouched.
+3. **Rename aside.** The current `plugins/<Name>/` is renamed to
+   `plugins/.modmenu-previous-<Name>/`.
+4. **Rename in.** The staged copy is renamed to `plugins/<Name>/`. If that rename
+   fails, the previous copy is renamed back.
+5. **Clean up.** For other plugins the previous copy is deleted straight away. For
+   ModMenu it is kept until the new version has loaded: on the next page load the new
+   ModMenu registers, checks that the `plugin.json` on disk matches the version that
+   is running, and deletes `.modmenu-previous-ModMenu`. While that folder exists the
+   Installed tab says an update was just installed.
+6. **Rollback.** If the new ModMenu throws while loading, the old copy is restored:
+   the new one is parked in `plugins/.modmenu-failed-ModMenu/`,
+   `.modmenu-previous-ModMenu` is renamed back to `plugins/ModMenu/`, and a critical
+   message is logged. The next request loads the old version again.
+
+**Bind mounts.** A bind-mounted plugin folder cannot be renamed, so step 3 fails:
+ModMenu reports that the folder may be a bind mount or read-only, and nothing is
+changed. Update bind-mounted plugins on the host.
+
+---
+
+## PLUGIN_INSTALLER
+
+Kanboard has its own built-in plugin installer, switched on by `PLUGIN_INSTALLER` in
+`config.php`. It is `false` by default, and many hosted boards leave it off.
+
+ModMenu does not read that setting. It is a separate installer for administrators:
+it keeps working while the plugins folder is writable and the PHP `zip` extension is
+loaded, and every action is admin-only and CSRF-protected. When `PLUGIN_INSTALLER` is
+off, the Installed tab shows a short note saying so, so the two are not confused.
+
+---
+
+## Upgrading from ModMenu < 1.3.0
+
+ModMenu before 1.3.0 refuses to install over itself, so it cannot update itself to
+1.3.0. The companion plugin
+[ModMenuUpdater](https://github.com/carmelosantana/kanboard-modmenu-updater) does
+that one step:
+
+1. In **Settings → ModMenu → Browse**, install **ModMenuUpdater**.
+2. Open **Settings → ModMenu Updater** and click **Update ModMenu to &lt;version&gt;**.
+3. In **Settings → ModMenu → Installed**, remove **ModMenuUpdater**.
+
+From 1.3.0 on, ModMenu updates itself from Browse and the companion is no longer needed.
+
+---
+
 ## Security posture
 
 | Concern | What ModMenu does |
@@ -94,7 +157,7 @@ cause is clear.
 | **Zip validation (entry count)** | Archives with more than 5 000 entries are rejected. |
 | **Zip validation (structure)** | Archive must contain exactly one top-level directory, and that directory must contain a `Plugin.php`. Any other structure is rejected. |
 | **Path-traversal protection** | Every zip entry name is checked: entries starting with `/`, containing `..`, or containing `\` are rejected. |
-| **Self-protection** | ModMenu cannot disable, uninstall, or install over itself. |
+| **Self-protection** | ModMenu cannot disable or uninstall itself. It updates itself only to a newer version, through the staged swap described under [Self-update](#self-update). |
 
 ---
 
@@ -123,7 +186,7 @@ Each entry in the JSON array is an object. All fields are optional except `name`
 | `author` | string | Plugin author name. |
 | `description` | string | Short description shown under the title. |
 | `version` | string | Semantic version string (e.g. `"1.2.0"`). Used for update detection: if this is greater than the installed version, an "Update available" badge appears. |
-| `compatible_version` | string | Minimum Kanboard version (e.g. `">=1.2.47"`). Informational; ModMenu does not enforce this. |
+| `compatible_version` | string | Minimum Kanboard version (e.g. `">=1.2.47"`). Checked against the plugin's own `plugin.json` on install and update: an incompatible plugin is refused. |
 | `homepage` | string | URL to the plugin's home page or repository. |
 | `download` | string | URL to the `.zip` archive. ModMenu downloads this URL when the admin clicks Install or Update. |
 | `screenshots` | array | List of screenshot URLs (or paths relative to the `plugins.json` URL). Displayed as thumbnails in the Browse tab. |
