@@ -113,4 +113,25 @@ class DirectoryClientTest extends Base
         $merged = $this->client->merge($sourcesData, []);
         $this->assertSame('Cal', $merged[0]['requires'][0]['plugin']);
     }
+
+    public function testAnnotateCarriesConflicts()
+    {
+        $plugins = [
+            ['name' => 'BattleLobby', 'version' => '1.0.0', 'conflicts' => ['ShadcnTheme', ['bad'], '']],
+            ['name' => 'Plain', 'version' => '1.0.0'],
+        ];
+        $out = $this->client->annotate($plugins, 'https://x.com/plugins.json', []);
+        $this->assertSame(['ShadcnTheme'], $out[0]['conflicts']);
+        $this->assertSame([], $out[1]['conflicts']);
+    }
+
+    public function testMergeCarriesConflicts()
+    {
+        $sourcesData = [[
+            'url' => 'https://a.com/plugins.json',
+            'plugins' => [['name' => 'BattleLobby', 'version' => '1.0.0', 'conflicts' => ['ShadcnTheme']]],
+        ]];
+        $merged = $this->client->merge($sourcesData, []);
+        $this->assertSame(['ShadcnTheme'], $merged[0]['conflicts']);
+    }
 }

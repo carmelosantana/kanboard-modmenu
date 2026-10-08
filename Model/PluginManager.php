@@ -256,6 +256,7 @@ class PluginManager extends Base
             'homepage' => '',
             'requires' => [],
             'recommends' => [],
+            'conflicts' => [],
         ];
 
         $jsonFile = $path . '/plugin.json';
@@ -273,6 +274,7 @@ class PluginManager extends Base
                 $meta['homepage'] = $json['homepage'] ?? '';
                 $meta['requires']   = self::normalizeDeps($json['requires'] ?? []);
                 $meta['recommends'] = self::normalizeDeps($json['recommends'] ?? []);
+                $meta['conflicts']  = self::normalizeConflicts($json['conflicts'] ?? []);
             }
         }
         return $meta;
@@ -298,6 +300,56 @@ class PluginManager extends Base
             }
         }
         return $out;
+    }
+
+    /**
+     * Normalize a raw `conflicts` value into a list of non-empty plugin names.
+     * Non-arrays and non-string/empty elements are dropped (never fatal).
+     */
+    public static function normalizeConflicts($raw): array
+    {
+        if (! is_array($raw)) {
+            return [];
+        }
+        return array_values(array_filter($raw, static fn ($c) => is_string($c) && $c !== ''));
+    }
+
+    /**
+     * Installed, ACTIVE plugins that conflict with $name, declared on either
+     * side. $name need not be installed (Browse entries). Warning-only:
+     * conflicts never block install, enable or any other operation.
+     */
+    public function activeConflicts(string $name): array
+    {
+        $installed = $this->listInstalled();
+        $mine = [];
+        foreach ($installed as $p) {
+            if ($p['name'] === $name) {
+                $mine = $p['conflicts'];
+            }
+        }
+
+        $out = [];
+        foreach ($installed as $p) {
+            if ($p['status'] !== 'active' || $p['name'] === $name) {
+                continue;
+            }
+            if (in_array($p['name'], $mine, true) || in_array($name, $p['conflicts'], true)) {
+                $out[] = $p['name'];
+            }
+        }
+        sort($out);
+        return $out;
+    }
+
+    /**
+     * Non-blocking warning for install/enable flashes: '' when $name has no
+     * active conflicts, else "Conflicts with A, B: disable one."
+     */
+    public function conflictWarning(string $name): string
+    {
+        $conflicts = $this->activeConflicts($name);
+        return $conflicts === [] ? '' : t('Conflicts with %s: disable one.', implode(', ', $conflicts));
     }
 
     /**

@@ -34,6 +34,11 @@
                     <?php foreach ($p['recommends'] as $i => $r): ?><?= $i ? ', ' : ' ' ?><?= $this->text->e($r['plugin']) ?><?php endforeach ?>
                 </div>
             <?php endif ?>
+            <?php if (! empty($p['conflicts'])): ?>
+                <div class="modmenu-dep modmenu-dep--conflict">
+                    <?= t('Conflicts with %s: enable only one.', $this->text->e(implode(', ', $p['conflicts']))) ?>
+                </div>
+            <?php endif ?>
 
             <?php if (! empty($p['screenshots'])): ?>
                 <div class="modmenu-shots">

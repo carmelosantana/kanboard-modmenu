@@ -48,8 +48,10 @@ class UploadController extends BaseController
         }
 
         try {
-            $name = (new PluginManager($this->container))->installFromFile($file['tmp_name']);
-            $this->flash->success(t('Plugin "%s" installed.', $name));
+            $manager = new PluginManager($this->container);
+            $name = $manager->installFromFile($file['tmp_name']);
+            $warning = $manager->conflictWarning($name);
+            $this->flash->success(trim(t('Plugin "%s" installed.', $name) . ' ' . $warning));
         } catch (ModMenuException $e) {
             $this->flash->failure($e->getMessage());
         }

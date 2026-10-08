@@ -44,6 +44,7 @@ class ModMenuController extends BaseController
         $plugins = $manager->listInstalled();
         foreach ($plugins as &$p) {
             $p['unmet_deps'] = $manager->unmetDepsFor($p['requires'] ?? [], $p['recommends'] ?? [], []);
+            $p['active_conflicts'] = $manager->activeConflicts($p['name']);
         }
         unset($p);
 
@@ -62,12 +63,23 @@ class ModMenuController extends BaseController
         $this->requireAdmin();
         $result = (new DirectoryClient($this->container))->fetchAll();
 
+        // Conflicts are warning-only: show declared ones plus any active
+        // installed plugin that declares a conflict with this entry.
+        $manager = $this->manager();
+        foreach ($result['plugins'] as &$p) {
+            $declared = $p['conflicts'] ?? [];
+            $all = array_values(array_unique(array_merge($declared, $manager->activeConflicts((string) ($p['name'] ?? '')))));
+            sort($all);
+            $p['conflicts'] = $all;
+        }
+        unset($p);
+
         $this->response->html($this->helper->layout->config('ModMenu:settings/directory', [
             'title' => t('ModMenu'),
             'tab' => 'browse',
             'plugins' => $result['plugins'],
             'errors' => $result['errors'],
-            'is_configured' => $this->manager()->isConfigured(),
+            'is_configured' => $manager->isConfigured(),
         ]));
     }
 
@@ -152,7 +164,7 @@ class ModMenuController extends BaseController
         // Legacy path: an install form that posts only archive_url (no name) can't
         // pre-flight deps — install directly, unchanged behavior.
         if ($name === '') {
-            $this->runAndFlash(fn (PluginManager $m) => $m->installFromUrl($target), t('Plugin installed.'));
+            $this->runAndFlash(fn (PluginManager $m) => $m->installFromUrl($target), t('Plugin installed.'), '', true);
             $this->backToDirectory();
             return;
         }
@@ -184,7 +196,8 @@ class ModMenuController extends BaseController
 
         $this->runAndFlash(
             fn (PluginManager $m) => $m->resolveAndActivate($name, $action, $target, $check['plan']),
-            $action === 'install' ? t('Plugin and its dependencies installed.') : t('Plugin and its dependencies enabled.')
+            $action === 'install' ? t('Plugin and its dependencies installed.') : t('Plugin and its dependencies enabled.'),
+            $name
         );
         $action === 'install' ? $this->backToDirectory() : $this->backToInstalled();
     }
@@ -194,7 +207,7 @@ class ModMenuController extends BaseController
         $this->requireAdmin();
         $this->checkCSRFForm();
         $url = $this->postValue('archive_url');
-        $this->runAndFlash(fn (PluginManager $m) => $m->installFromUrl($url), t('Plugin updated.'));
+        $this->runAndFlash(fn (PluginManager $m) => $m->installFromUrl($url), t('Plugin updated.'), '', true);
         $this->response->redirect($this->helper->url->to('ModMenuController', 'directory', ['plugin' => 'ModMenu']));
     }
 
@@ -234,7 +247,7 @@ class ModMenuController extends BaseController
         if ($check['satisfied']) {
             $this->runAndFlash(function (PluginManager $m) use ($name, $action, $target) {
                 $action === 'install' ? $m->installFromUrl($target) : $m->enable($name);
-            }, $action === 'install' ? t('Plugin installed.') : t('Plugin enabled.'));
+            }, $action === 'install' ? t('Plugin installed.') : t('Plugin enabled.'), $name);
             $action === 'install' ? $this->backToDirectory() : $this->backToInstalled();
             return;
         }
@@ -277,11 +290,22 @@ class ModMenuController extends BaseController
         return isset($values[$key]) ? (string) $values[$key] : '';
     }
 
-    private function runAndFlash(callable $op, string $successMessage): void
+    /**
+     * Run a manager operation and flash the outcome. When $warnFor names a
+     * plugin (or $warnForResult takes the plugin name the op returns), any
+     * active conflict is appended to the success message — a warning only,
+     * never a block.
+     */
+    private function runAndFlash(callable $op, string $successMessage, string $warnFor = '', bool $warnForResult = false): void
     {
         try {
-            $op($this->manager());
-            $this->flash->success($successMessage);
+            $manager = $this->manager();
+            $result = $op($manager);
+            if ($warnForResult && is_string($result)) {
+                $warnFor = $result;
+            }
+            $warning = $warnFor !== '' ? $manager->conflictWarning($warnFor) : '';
+            $this->flash->success($warning === '' ? $successMessage : $successMessage . ' ' . $warning);
         } catch (ModMenuException $e) {
             $this->flash->failure($e->getMessage());
         }

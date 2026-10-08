@@ -58,6 +58,12 @@
                 </div>
             <?php endif ?>
 
+            <?php if (! empty($p['active_conflicts'])): ?>
+                <div class="modmenu-dep modmenu-dep--conflict">
+                    <?= t('Conflicts with %s: disable one.', $this->text->e(implode(', ', $p['active_conflicts']))) ?>
+                </div>
+            <?php endif ?>
+
             <?php if ($p['name'] !== $self_name): ?>
                 <div class="modmenu-actions">
                     <?php if ($p['status'] === 'active'): ?>

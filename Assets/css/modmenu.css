@@ -15,4 +15,5 @@
 .modmenu-dep { font-size: 13px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .modmenu-dep--required { color: #b91c1c; }
 .modmenu-dep--recommended { color: #6b7280; }
+.modmenu-dep--conflict { color: #b45309; }
 .modmenu-plan { margin: 8px 0 16px 18px; }

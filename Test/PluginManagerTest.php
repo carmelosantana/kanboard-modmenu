@@ -197,14 +197,15 @@ class PluginManagerTest extends Base
         $this->assertSame('hello harmozi', file_get_contents($dst . '/sub/quote.php'));
     }
 
-    // Extended seeder: pass optional requires/recommends arrays.
-    private function seedPluginWithDeps(string $dir, string $name, string $version, array $requires = [], array $recommends = []): void
+    // Extended seeder: pass optional requires/recommends/conflicts arrays.
+    private function seedPluginWithDeps(string $dir, string $name, string $version, array $requires = [], array $recommends = [], array $conflicts = []): void
     {
         mkdir("$dir/$name", 0777, true);
         file_put_contents("$dir/$name/Plugin.php", "<?php\n");
         $json = ['name' => $name, 'version' => $version];
         if ($requires !== [])   { $json['requires'] = $requires; }
         if ($recommends !== []) { $json['recommends'] = $recommends; }
+        if ($conflicts !== [])  { $json['conflicts'] = $conflicts; }
         file_put_contents("$dir/$name/plugin.json", json_encode($json));
     }
 
@@ -363,5 +364,91 @@ class PluginManagerTest extends Base
             $this->assertDirectoryExists("{$this->disabled}/Dep", 'target must NOT have been enabled');
             $this->assertDirectoryDoesNotExist("{$this->active}/Dep");
         }
+    }
+
+    // ── conflicts (warn, never block) ──────────────────────────────────────
+
+    private function installedByName(): array
+    {
+        $byName = [];
+        foreach ($this->manager->listInstalled() as $p) { $byName[$p['name']] = $p; }
+        return $byName;
+    }
+
+    public function testReadMetaParsesConflictsDefaultEmpty()
+    {
+        $this->seedPluginWithDeps($this->active, 'Alpha', '1.0.0', [], [], ['Beta']);
+        $this->seedPlugin($this->active, 'Gamma', '1.0.0');
+        $byName = $this->installedByName();
+        $this->assertSame(['Beta'], $byName['Alpha']['conflicts']);
+        $this->assertSame([], $byName['Gamma']['conflicts']);
+    }
+
+    public function testReadMetaIgnoresMalformedConflicts()
+    {
+        $this->seedPlugin($this->active, 'Bad', '1.0.0');
+        file_put_contents("{$this->active}/Bad/plugin.json", json_encode([
+            'name' => 'Bad', 'version' => '1.0.0', 'conflicts' => ['Beta', ['x'], 3, ''],
+        ]));
+        $this->assertSame(['Beta'], $this->installedByName()['Bad']['conflicts']);
+
+        file_put_contents("{$this->active}/Bad/plugin.json", json_encode([
+            'name' => 'Bad', 'version' => '1.0.0', 'conflicts' => 'Beta',
+        ]));
+        $this->assertSame([], $this->installedByName()['Bad']['conflicts']);
+    }
+
+    public function testActiveConflictsIsSymmetric()
+    {
+        $this->seedPluginWithDeps($this->active, 'Alpha', '1.0.0', [], [], ['Beta']);
+        $this->seedPlugin($this->active, 'Beta', '1.0.0');
+        $this->seedPlugin($this->active, 'Gamma', '1.0.0');
+        $this->assertSame(['Beta'], $this->manager->activeConflicts('Alpha'));
+        $this->assertSame(['Alpha'], $this->manager->activeConflicts('Beta'));
+        $this->assertSame([], $this->manager->activeConflicts('Gamma'));
+    }
+
+    public function testActiveConflictsIgnoresDisabledPlugins()
+    {
+        $this->seedPluginWithDeps($this->active, 'Alpha', '1.0.0', [], [], ['Beta']);
+        $this->seedPlugin($this->disabled, 'Beta', '1.0.0');
+        $this->assertSame([], $this->manager->activeConflicts('Alpha'));
+        // A disabled plugin still learns which active plugins it would clash with.
+        $this->assertSame(['Alpha'], $this->manager->activeConflicts('Beta'));
+    }
+
+    public function testActiveConflictsForUninstalledName()
+    {
+        // Browse: an uninstalled directory entry an active plugin declares a conflict with.
+        $this->seedPluginWithDeps($this->active, 'Alpha', '1.0.0', [], [], ['Beta']);
+        $this->assertSame(['Alpha'], $this->manager->activeConflicts('Beta'));
+    }
+
+    public function testConflictWarning()
+    {
+        $this->seedPluginWithDeps($this->active, 'Alpha', '1.0.0', [], [], ['Beta', 'Delta']);
+        $this->seedPlugin($this->active, 'Beta', '1.0.0');
+        $this->seedPlugin($this->active, 'Delta', '1.0.0');
+        $this->seedPlugin($this->active, 'Gamma', '1.0.0');
+        $this->assertSame('Conflicts with Beta, Delta: disable one.', $this->manager->conflictWarning('Alpha'));
+        $this->assertSame('', $this->manager->conflictWarning('Gamma'));
+    }
+
+    public function testConflictsNeverBlockEnable()
+    {
+        $this->seedPluginWithDeps($this->active, 'Alpha', '1.0.0', [], [], ['Beta']);
+        $this->seedPlugin($this->disabled, 'Beta', '1.0.0');
+        $this->manager->enable('Beta'); // must not throw
+        $this->assertDirectoryExists("{$this->active}/Beta");
+        $this->assertSame('Conflicts with Alpha: disable one.', $this->manager->conflictWarning('Beta'));
+    }
+
+    public function testConflictsNeverBlockForwardCheck()
+    {
+        $this->seedPluginWithDeps($this->disabled, 'Beta', '1.0.0', [], [], ['Alpha']);
+        $this->seedPlugin($this->active, 'Alpha', '1.0.0');
+        $check = $this->manager->forwardCheck($this->manager->installedPluginsDeps()['Beta']['requires'], []);
+        $this->assertTrue($check['satisfied']);
+        $this->assertFalse($check['blocked']);
     }
 }

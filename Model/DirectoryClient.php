@@ -42,6 +42,8 @@ class DirectoryClient extends Base
                 $plugin['status'] = 'available';
             }
 
+            $plugin['conflicts'] = PluginManager::normalizeConflicts($plugin['conflicts'] ?? []);
+
             if (! empty($plugin['screenshots']) && is_array($plugin['screenshots'])) {
                 $plugin['screenshots'] = array_map(
                     static fn ($s) => self::resolveAssetUrl((string) $s, $baseUrl),
