@@ -474,7 +474,7 @@ class PluginManager extends Base
 
     private function guardName(string $name): void
     {
-        if ($name === '' || basename($name) !== $name) {
+        if ($name === '' || basename($name) !== $name || str_starts_with($name, '.')) {
             throw new ModMenuException(t('Invalid plugin name.'));
         }
     }

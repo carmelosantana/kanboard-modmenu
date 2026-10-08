@@ -66,6 +66,52 @@ class PluginManagerTest extends Base
         $this->assertSame('2.1.0', $byName['Beta']['version']);
     }
 
+    public function testListInstalledSkipsDotDirsLikeKanboardsLoader()
+    {
+        $this->seedPlugin($this->active, 'Alpha', '1.0.0');
+        $this->seedPlugin($this->active, '.modmenu-trash-x', '1.1.0');
+        $this->seedPlugin($this->active, '.modmenu-previous-ModMenu', '1.1.0');
+        $this->seedPlugin($this->disabled, '.hidden', '2.0.0');
+
+        $names = array_column($this->manager->listInstalled(), 'name');
+        $this->assertSame(['Alpha'], $names);
+        $this->assertSame(['Alpha'], array_keys($this->manager->installedMap()));
+    }
+
+    public function testUninstallRefusesDotNameAndLeavesItUntouched()
+    {
+        $this->seedPlugin($this->active, '.modmenu-trash-x', '1.1.0');
+        $this->assertInvalidName(fn() => $this->manager->uninstall('.modmenu-trash-x'));
+        $this->assertDirectoryExists("{$this->active}/.modmenu-trash-x");
+    }
+
+    public function testDisableRefusesDotNameAndLeavesItUntouched()
+    {
+        $this->seedPlugin($this->active, '.modmenu-trash-x', '1.1.0');
+        $this->assertInvalidName(fn() => $this->manager->disable('.modmenu-trash-x'));
+        $this->assertDirectoryExists("{$this->active}/.modmenu-trash-x");
+        $this->assertDirectoryDoesNotExist("{$this->disabled}/.modmenu-trash-x");
+    }
+
+    public function testEnableRefusesDotNameAndLeavesItUntouched()
+    {
+        $this->seedPlugin($this->disabled, '.hidden', '2.0.0');
+        $this->assertInvalidName(fn() => $this->manager->enable('.hidden'));
+        $this->assertDirectoryExists("{$this->disabled}/.hidden");
+        $this->assertDirectoryDoesNotExist("{$this->active}/.hidden");
+    }
+
+    private function assertInvalidName(callable $fn): void
+    {
+        try {
+            $fn();
+        } catch (ModMenuException $e) {
+            $this->assertSame('Invalid plugin name.', $e->getMessage());
+            return;
+        }
+        $this->fail('Expected ModMenuException "Invalid plugin name."');
+    }
+
     public function testDisableMovesFolderToDisabledDir()
     {
         $this->seedPlugin($this->active, 'Alpha', '1.0.0');
