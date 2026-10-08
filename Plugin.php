@@ -20,19 +20,26 @@ class Plugin extends Base
      * Load guard for self-updates: if this (new) copy fails to register, put
      * the previous copy back so the next request loads it; once it has
      * registered, drop the previous copy. Kanboard's loader only catches
-     * Exception, so an \Error here would otherwise take the whole site down.
+     * Exception, so nothing but a \RuntimeException may leave this method:
+     * an \Error would take the whole site down.
      */
     public function initialize()
     {
         try {
             $this->register();
         } catch (\Throwable $e) {
-            $restored = (new PluginSwap($this->pluginsDir()))->rollback('ModMenu');
+            try {
+                // Only roll back the copy that failed: a concurrent request may already have.
+                $restored = (new PluginSwap($this->pluginsDir()))->rollback('ModMenu', $this->getPluginVersion());
+            } catch (\Throwable $rollbackError) {
+                $this->logger->critical('ModMenu: new version failed to load (' . $e->getMessage() . ') and the rollback failed: ' . $rollbackError->getMessage());
+                throw new \RuntimeException('ModMenu failed to load: ' . $e->getMessage(), 0, $e);
+            }
             if ($restored) {
                 $this->logger->critical('ModMenu: new version failed to load, previous version restored: ' . $e->getMessage());
                 return;
             }
-            throw $e;
+            throw new \RuntimeException('ModMenu failed to load: ' . $e->getMessage(), 0, $e);
         }
 
         (new PluginSwap($this->pluginsDir()))->finalize('ModMenu', $this->getPluginVersion());
