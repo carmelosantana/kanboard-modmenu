@@ -5,6 +5,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.3.2] — 2026-10-08
+
+### Fixed
+
+- Hidden working folders (`.modmenu-*`) left by an update are no longer listed as plugins on the Installed tab.
+
 ## [1.3.1] — 2026-10-08
 
 ### Fixed
