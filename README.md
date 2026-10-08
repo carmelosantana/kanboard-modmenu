@@ -98,6 +98,9 @@ verified swap:
 2. **Verify.** The staged copy must have a `Plugin.php` that declares the namespace
    `Kanboard\Plugin\<Name>`, every `.php` file must parse, and its `plugin.json`
    `php_version` and `compatible_version` (when present) must match this server.
+   The syntax check uses the tokenizer extension, or OPcache's compiler when PHP
+   lacks tokenizer (as the official Kanboard Docker image does). With neither
+   available the check is skipped; a copy that then fails to load is rolled back.
    For ModMenu itself the staged version must also be newer than the installed one.
    Any failure stops here with a message, and the installed copy is untouched.
 3. **Rename aside.** The current `plugins/<Name>/` is renamed to
