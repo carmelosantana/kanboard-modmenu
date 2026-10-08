@@ -5,6 +5,21 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.3.0] — 2026-10-08
+
+### Added
+
+- **Self-update.** ModMenu updates itself from Browse → Update. The new copy must be newer than the installed one; the previous copy is kept in `plugins/.modmenu-previous-ModMenu/` until the new version has loaded, then deleted. If the new version fails to load, the previous copy is restored and the failed one parked in `plugins/.modmenu-failed-ModMenu/`.
+- **Upgrade path from older versions.** ModMenu before 1.3.0 cannot install over itself; the companion plugin ModMenuUpdater performs that one update (see the README).
+
+### Changed
+
+- **Every plugin install and update is a verified, staged swap with rollback.** The archive is extracted to a dot-prefixed staging folder inside `plugins/`, checked (`Plugin.php` namespace, every `.php` file parses, `php_version` and `compatible_version`), then swapped in by rename. If the new copy cannot be moved in, the previous copy is put back. A bind-mounted plugin folder is reported and left unchanged.
+- **PLUGIN_INSTALLER note.** When Kanboard's built-in plugin installer is off (the default), the Installed tab explains that ModMenu is a separate, admin-only installer that does not depend on that setting.
+- The Installed tab's ModMenu card now points to Browse for updates.
+
+---
+
 ## [1.2.1] — 2026-10-08
 
 ### Fixed
