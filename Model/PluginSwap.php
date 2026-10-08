@@ -111,7 +111,7 @@ class PluginSwap
         return $staged ?? '';
     }
 
-    /** @throws ModMenuException with the relative path and line of the first ParseError */
+    /** @throws ModMenuException with the relative path and line of the first ParseError/CompileError */
     private function assertPhpParses(string $stagedDir, string $name): void
     {
         $files = new \RecursiveIteratorIterator(
@@ -124,7 +124,7 @@ class PluginSwap
             $path = $file->getPathname();
             try {
                 token_get_all((string) file_get_contents($path), TOKEN_PARSE);
-            } catch (\ParseError $e) {
+            } catch (\CompileError $e) { // ParseError extends CompileError; both are load-fatal
                 $relative = substr($path, strlen($stagedDir) + 1);
                 throw new ModMenuException(t('The new %s has a PHP syntax error in %s on line %d.', $name, $relative, $e->getLine()));
             }

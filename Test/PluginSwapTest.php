@@ -152,6 +152,14 @@ class PluginSwapTest extends Base
         $this->assertThrowsMessage(fn() => $this->swap->verify($staged, 'Alpha'), 'Model/X.php');
     }
 
+    public function testVerifyFailsOnCompileErrorInNestedFileWithPath()
+    {
+        $staged = $this->stage('Alpha', '1.3.0');
+        mkdir("$staged/Model", 0777, true);
+        file_put_contents("$staged/Model/Y.php", "<?php class A { public public \$x; }");
+        $this->assertThrowsMessage(fn() => $this->swap->verify($staged, 'Alpha'), 'Model/Y.php');
+    }
+
     public function testVerifyFailsWhenPhpVersionTooLow()
     {
         $staged = $this->stage('Alpha', '1.3.0', ['php_version' => '>=99.0']);
