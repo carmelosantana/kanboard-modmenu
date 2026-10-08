@@ -5,6 +5,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.3.1] — 2026-10-08
+
+### Fixed
+
+- Self-update works on PHP builds without the tokenizer extension (e.g. the official Kanboard Docker image) by falling back to OPcache's compiler for the pre-swap syntax check.
+
 ## [1.3.0] — 2026-10-08
 
 ### Added
