@@ -57,19 +57,19 @@ class Plugin extends Base
         $this->hook->on('template:layout:css', ['template' => 'plugins/ModMenu/Assets/css/modmenu.css']);
         $this->hook->on('template:layout:js', ['template' => 'plugins/ModMenu/Assets/js/modmenu.js']);
 
-        $this->route->addRoute('config/modmenu', 'ModMenu:ModMenuController', 'show');
-        $this->route->addRoute('config/modmenu/directory', 'ModMenu:ModMenuController', 'directory');
-        $this->route->addRoute('config/modmenu/sources', 'ModMenu:ModMenuController', 'sources');
-        $this->route->addRoute('config/modmenu/source/add', 'ModMenu:ModMenuController', 'addSource');
-        $this->route->addRoute('config/modmenu/source/remove', 'ModMenu:ModMenuController', 'removeSource');
-        $this->route->addRoute('config/modmenu/plugin/confirm', 'ModMenu:ModMenuController', 'confirm');
-        $this->route->addRoute('config/modmenu/plugin/resolve', 'ModMenu:ModMenuController', 'resolve');
-        $this->route->addRoute('config/modmenu/plugin/enable', 'ModMenu:ModMenuController', 'enable');
-        $this->route->addRoute('config/modmenu/plugin/disable', 'ModMenu:ModMenuController', 'disable');
-        $this->route->addRoute('config/modmenu/plugin/uninstall', 'ModMenu:ModMenuController', 'uninstall');
-        $this->route->addRoute('config/modmenu/plugin/install', 'ModMenu:ModMenuController', 'install');
-        $this->route->addRoute('config/modmenu/plugin/update', 'ModMenu:ModMenuController', 'update');
-        $this->route->addRoute('config/modmenu/upload', 'ModMenu:UploadController', 'upload');
+        $this->route->addRoute('config/modmenu', 'ModMenuController', 'show', 'ModMenu');
+        $this->route->addRoute('config/modmenu/directory', 'ModMenuController', 'directory', 'ModMenu');
+        $this->route->addRoute('config/modmenu/sources', 'ModMenuController', 'sources', 'ModMenu');
+        $this->route->addRoute('config/modmenu/source/add', 'ModMenuController', 'addSource', 'ModMenu');
+        $this->route->addRoute('config/modmenu/source/remove', 'ModMenuController', 'removeSource', 'ModMenu');
+        $this->route->addRoute('config/modmenu/plugin/confirm', 'ModMenuController', 'confirm', 'ModMenu');
+        $this->route->addRoute('config/modmenu/plugin/resolve', 'ModMenuController', 'resolve', 'ModMenu');
+        $this->route->addRoute('config/modmenu/plugin/enable', 'ModMenuController', 'enable', 'ModMenu');
+        $this->route->addRoute('config/modmenu/plugin/disable', 'ModMenuController', 'disable', 'ModMenu');
+        $this->route->addRoute('config/modmenu/plugin/uninstall', 'ModMenuController', 'uninstall', 'ModMenu');
+        $this->route->addRoute('config/modmenu/plugin/install', 'ModMenuController', 'install', 'ModMenu');
+        $this->route->addRoute('config/modmenu/plugin/update', 'ModMenuController', 'update', 'ModMenu');
+        $this->route->addRoute('config/modmenu/upload', 'UploadController', 'upload', 'ModMenu');
     }
 
     public function getPluginName(): string
