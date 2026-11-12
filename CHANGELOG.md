@@ -5,6 +5,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.3.3] — 2026-11-12
+
+### Fixed
+
+- Clean URLs (`/config/modmenu`, `/config/modmenu/directory`, …) now open ModMenu. With URL rewriting on they returned "Action not implemented" or the dashboard, because the routes were registered without their plugin; only the `?controller=…` form worked. ModMenu's own links and forms now use the clean addresses.
+
 ## [1.3.2] — 2026-10-08
 
 ### Fixed
