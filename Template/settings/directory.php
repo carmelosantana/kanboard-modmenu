@@ -6,11 +6,23 @@
 <?php endforeach ?>
 
 <?php if (! empty($updates) && $is_configured): ?>
-    <form method="post" class="modmenu-update-all" action="<?= $this->url->href('ModMenuController', 'updateAll', ['plugin' => 'ModMenu']) ?>">
-        <?= $this->form->csrf() ?>
-        <button type="submit" class="btn btn-blue"><i class="fa fa-refresh" aria-hidden="true"></i> <?= t('Update all (%d)', count($updates)) ?></button>
-        <span class="modmenu-card__status"><?= $this->text->e(implode(', ', array_map(static fn ($u) => $u['plugin'] . ' ' . $u['from'] . ' → ' . $u['to'], $updates))) ?></span>
-    </form>
+    <div class="modmenu-updates">
+        <div class="modmenu-updates__head">
+            <strong><?= count($updates) === 1 ? t('1 update available') : t('%d updates available', count($updates)) ?></strong>
+            <form method="post" action="<?= $this->url->href('ModMenuController', 'updateAll', ['plugin' => 'ModMenu']) ?>">
+                <?= $this->form->csrf() ?>
+                <button type="submit" class="btn btn-blue"><i class="fa fa-refresh" aria-hidden="true"></i> <?= t('Update all') ?></button>
+            </form>
+        </div>
+        <ul class="modmenu-updates__list">
+            <?php foreach ($updates as $u): ?>
+                <li>
+                    <span class="modmenu-updates__name"><?= $this->text->e($u['plugin']) ?></span>
+                    <span class="modmenu-updates__version"><?= $this->text->e($u['from']) ?> &rarr; <strong><?= $this->text->e($u['to']) ?></strong></span>
+                </li>
+            <?php endforeach ?>
+        </ul>
+    </div>
 <?php endif ?>
 
 <?php if (empty($plugins)): ?>
@@ -27,9 +39,8 @@
                 <span class="modmenu-badge modmenu-badge--disabled"><?= t('Disabled') ?></span>
             <?php endif ?>
 
-            <div class="modmenu-card__status">v<?= $this->text->e($p['version']) ?><?php if (! empty($p['author'])): ?> · <?= $this->text->e($p['author']) ?><?php endif ?></div>
-            <?php if (! empty($p['description'])): ?><p><?= $this->text->e($p['description']) ?></p><?php endif ?>
-
+            <?php if (! empty($p['requires']) || ! empty($p['conflicts'])): ?>
+            <div class="modmenu-card__alerts">
             <?php if (! empty($p['requires'])): ?>
                 <div class="modmenu-dep modmenu-callout modmenu-dep--required">
                     <i class="fa fa-exclamation-triangle" aria-hidden="true"></i>
@@ -37,17 +48,23 @@
                     <?php foreach ($p['requires'] as $i => $r): ?><?= $i ? ', ' : ' ' ?><?= $this->text->e($r['plugin']) ?><?php if (! empty($r['min_version'])): ?> &ge; <?= $this->text->e($r['min_version']) ?><?php endif ?><?php endforeach ?></span>
                 </div>
             <?php endif ?>
-            <?php if (! empty($p['recommends'])): ?>
-                <div class="modmenu-dep modmenu-dep--recommended">
-                    <?= t('Recommends:') ?>
-                    <?php foreach ($p['recommends'] as $i => $r): ?><?= $i ? ', ' : ' ' ?><?= $this->text->e($r['plugin']) ?><?php endforeach ?>
-                </div>
-            <?php endif ?>
             <?php if (! empty($p['conflicts'])): ?>
                 <div class="modmenu-dep modmenu-callout modmenu-dep--conflict">
                     <i class="fa fa-exclamation-triangle" aria-hidden="true"></i>
                     <span><strong class="modmenu-callout__label"><?= t('Conflict.') ?></strong>
                     <?= t('Conflicts with %s: enable only one.', $this->text->e(implode(', ', $p['conflicts']))) ?></span>
+                </div>
+            <?php endif ?>
+            </div>
+            <?php endif ?>
+
+            <div class="modmenu-card__status">v<?= $this->text->e($p['version']) ?><?php if (! empty($p['author'])): ?> · <?= $this->text->e($p['author']) ?><?php endif ?></div>
+            <?php if (! empty($p['description'])): ?><p><?= $this->text->e($p['description']) ?></p><?php endif ?>
+
+            <?php if (! empty($p['recommends'])): ?>
+                <div class="modmenu-dep modmenu-dep--recommended">
+                    <?= t('Recommends:') ?>
+                    <?php foreach ($p['recommends'] as $i => $r): ?><?= $i ? ', ' : ' ' ?><?= $this->text->e($r['plugin']) ?><?php endforeach ?>
                 </div>
             <?php endif ?>
 
