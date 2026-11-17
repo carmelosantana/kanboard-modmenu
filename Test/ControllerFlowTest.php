@@ -270,4 +270,44 @@ class ControllerFlowTest extends Base
 
         $this->assertStringContainsString('ShadcnTheme', $this->flashes['failure']);
     }
+
+    // ── catalog-driven install and update ──────────────────────────────────
+
+    public function testUpdateInstallsTheCatalogDownloadForTheNamedPlugin()
+    {
+        $catalog = ['Alpha' => ['download' => 'https://x/alpha.zip']];
+        $m = $this->manager();
+        $m->expects($this->once())->method('installFromUrl')->with('https://x/alpha.zip', 'Alpha')->willReturn('Alpha');
+        $m->method('conflictWarning')->willReturn('');
+        $this->post(['name' => 'Alpha', 'archive_url' => 'https://elsewhere/other.zip']);
+
+        $this->controller($m, $catalog)->update();
+
+        $this->assertSame('Plugin updated.', $this->flashes['success']);
+    }
+
+    public function testUpdateRefusesAPluginMissingFromTheCatalog()
+    {
+        $m = $this->manager();
+        $m->expects($this->never())->method('installFromUrl');
+        $this->post(['name' => 'Ghost', 'archive_url' => 'https://x/ghost.zip']);
+
+        $this->controller($m, [])->update();
+
+        $this->assertArrayHasKey('failure', $this->flashes);
+    }
+
+    public function testInstallByNameUsesTheCatalogDownloadAndExpectedName()
+    {
+        $catalog = ['Alpha' => ['download' => 'https://x/alpha.zip', 'requires' => []]];
+        $m = $this->manager();
+        $m->method('activeConflicts')->willReturn([]);
+        $m->method('forwardCheck')->willReturn(['satisfied' => true, 'blocked' => false, 'plan' => []]);
+        $m->expects($this->once())->method('installFromUrl')->with('https://x/alpha.zip', 'Alpha');
+        $this->post(['name' => 'Alpha', 'archive_url' => 'https://elsewhere/other.zip']);
+
+        $this->controller($m, $catalog)->install();
+
+        $this->assertStringContainsString('Plugin installed.', $this->flashes['success']);
+    }
 }

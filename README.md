@@ -104,7 +104,7 @@ verified swap:
    folder is always removed afterwards.
 2. **Verify.** The staged copy must have a `Plugin.php` that declares the namespace
    `Kanboard\Plugin\<Name>`, every `.php` file must parse, and its `plugin.json`
-   `php_version` and `compatible_version` (when present) must match this server.
+   `php_version` and `kanboard_version` (or the older `compatible_version`, when present) must match this server.
    The syntax check uses the tokenizer extension, or OPcache's compiler when PHP
    lacks tokenizer (as the official Kanboard Docker image does). With neither
    available the check is skipped; a copy that then fails to load is rolled back.
@@ -206,7 +206,7 @@ Each entry in the JSON array is an object. All fields are optional except `name`
 | `author` | string | Plugin author name. |
 | `description` | string | Short description shown under the title. |
 | `version` | string | Semantic version string (e.g. `"1.2.0"`). Used for update detection: if this is greater than the installed version, an "Update available" badge appears. |
-| `compatible_version` | string | Minimum Kanboard version (e.g. `">=1.2.47"`). Checked against the plugin's own `plugin.json` on install and update: an incompatible plugin is refused. |
+| `kanboard_version` (or `compatible_version`) | string | Minimum Kanboard version (e.g. `">=1.2.47"`). Checked against the plugin's own `plugin.json` on install and update: an incompatible plugin is refused. |
 | `homepage` | string | URL to the plugin's home page or repository. |
 | `download` | string | URL to the `.zip` archive. ModMenu downloads this URL when the admin clicks Install or Update. |
 | `screenshots` | array | List of screenshot URLs (or paths relative to the `plugins.json` URL). Displayed as thumbnails in the Browse tab. |

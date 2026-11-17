@@ -227,4 +227,23 @@ class PluginArchiveTest extends Base
         $this->assertSame("<?php\n", file_get_contents($dst . '/Plugin.php'));
         $this->assertSame('hello',   file_get_contents($dst . '/sub/x.txt'));
     }
+
+    public function testInspectRejectsArchiveThatExpandsPastTheCap()
+    {
+        $zip = $this->work . '/big.zip';
+        $this->makeZip($zip, [
+            'Big/Plugin.php' => "<?php\n",
+            'Big/blob.txt'   => str_repeat('a', 4096),
+        ]);
+        $archive = new class($this->container) extends PluginArchive {
+            const MAX_UNCOMPRESSED_BYTES = 1024;
+        };
+        try {
+            $archive->inspect($zip);
+            $this->fail('expected ModMenuException');
+        } catch (ModMenuException $e) {
+            $this->assertStringContainsString('too large', $e->getMessage());
+        }
+        $this->assertSame('Big', (new PluginArchive($this->container))->inspect($zip));
+    }
 }

@@ -72,6 +72,7 @@
                 <?php elseif ($p['status'] === 'update'): ?>
                     <form method="post" class="modmenu-action" action="<?= $this->url->href('ModMenuController', 'update', ['plugin' => 'ModMenu']) ?>">
                         <?= $this->form->csrf() ?>
+                        <input type="hidden" name="name" value="<?= $this->text->e($p['name']) ?>">
                         <input type="hidden" name="archive_url" value="<?= $this->text->e($p['download']) ?>">
                         <button type="submit" class="btn btn-blue"><?= t('Update') ?></button>
                     </form>

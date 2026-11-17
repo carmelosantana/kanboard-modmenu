@@ -667,4 +667,55 @@ class PluginManagerTest extends Base
         $this->assertDirectoryExists("{$this->disabled}/ThirdTheme");
         $this->assertDirectoryExists("{$this->active}/Bystander");
     }
+
+    // ── catalog name must match the archive ────────────────────────────────
+
+    public function testInstallFromUrlRefusesArchiveForAnotherPlugin()
+    {
+        $this->seedNamespaced('Beta', '1.0.0');
+        $this->stubDownloads(['https://x/alpha.zip' => $this->makeZip('Beta', '9.0.0')]);
+        try {
+            $this->manager->installFromUrl('https://x/alpha.zip', 'Alpha');
+            $this->fail('expected ModMenuException');
+        } catch (ModMenuException $e) {
+            $this->assertStringContainsString('Alpha', $e->getMessage());
+        }
+        $this->assertStringContainsString('1.0.0', file_get_contents("{$this->active}/Beta/plugin.json"));
+        $this->assertDirectoryDoesNotExist("{$this->active}/Alpha");
+        $this->assertSame([], $this->dotDirs('.modmenu-'));
+    }
+
+    public function testInstallFromUrlAcceptsMatchingName()
+    {
+        $this->stubDownloads(['https://x/alpha.zip' => $this->makeZip('Alpha', '1.0.0')]);
+        $this->assertSame('Alpha', $this->manager->installFromUrl('https://x/alpha.zip', 'Alpha'));
+    }
+
+    public function testUpdateAllRefusesArchiveWhoseFolderDiffersFromCatalogName()
+    {
+        $this->seedNamespaced('Alpha', '1.0.0');
+        $this->seedNamespaced('Beta', '1.0.0');
+        $this->stubDownloads(['https://x/alpha.zip' => $this->makeZip('Beta', '9.0.0')]);
+
+        $result = $this->manager->updateAll(['Alpha' => ['version' => '1.1.0', 'download' => 'https://x/alpha.zip']]);
+
+        $this->assertSame([], $result['updated']);
+        $this->assertArrayHasKey('Alpha', $result['failed']);
+        $this->assertStringContainsString('1.0.0', file_get_contents("{$this->active}/Beta/plugin.json"));
+    }
+
+    public function testResolveAndActivatePassesExpectedNames()
+    {
+        $this->seedNamespaced('Beta', '1.0.0');
+        $this->stubDownloads(['https://x/dep.zip' => $this->makeZip('Beta', '9.0.0')]);
+        try {
+            $this->manager->resolveAndActivate('Target', 'install', 'https://x/t.zip', [
+                ['plugin' => 'Dep', 'action' => 'install', 'download' => 'https://x/dep.zip'],
+            ]);
+            $this->fail('expected ModMenuException');
+        } catch (ModMenuException $e) {
+            $this->assertStringContainsString('Dep', $e->getMessage());
+        }
+        $this->assertStringContainsString('1.0.0', file_get_contents("{$this->active}/Beta/plugin.json"));
+    }
 }

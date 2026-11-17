@@ -18,6 +18,7 @@ class PluginArchive extends Base
 {
     const MAX_ARCHIVE_BYTES = 52428800; // 50 MB
     const MAX_ENTRIES = 5000;
+    const MAX_UNCOMPRESSED_BYTES = 209715200; // 200 MB once extracted
 
     /**
      * True when a zip entry name is safe to extract: non-empty, no parent-dir
@@ -59,9 +60,16 @@ class PluginArchive extends Base
 
             $topDirs = [];
             $hasPluginPhp = false;
+            $expanded = 0;
 
             for ($i = 0; $i < $zip->numFiles; $i++) {
-                $entry = $zip->statIndex($i)['name'];
+                $stat = $zip->statIndex($i);
+                $entry = $stat['name'];
+
+                $expanded += (int) ($stat['size'] ?? 0);
+                if ($expanded > static::MAX_UNCOMPRESSED_BYTES) {
+                    throw new ModMenuException(t('Plugin archive is too large once extracted.'));
+                }
 
                 if (! self::isEntryNameSafe($entry)) {
                     throw new ModMenuException(t('The plugin archive contains an unsafe path: %s', $entry));

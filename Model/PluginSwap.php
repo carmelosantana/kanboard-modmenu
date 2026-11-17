@@ -92,7 +92,7 @@ class PluginSwap
             }
         }
 
-        $compat = isset($meta['compatible_version']) && is_string($meta['compatible_version']) ? $meta['compatible_version'] : '';
+        $compat = self::kanboardConstraint($meta);
         if ($compat !== '' && class_exists(\Kanboard\Core\Plugin\Version::class) && defined('APP_VERSION')) {
             if (! \Kanboard\Core\Plugin\Version::isCompatible($compat, APP_VERSION)) {
                 throw new ModMenuException(t('The new %s requires Kanboard %s; this board runs %s.', $name, $compat, APP_VERSION));
@@ -111,6 +111,20 @@ class PluginSwap
         }
 
         return $staged ?? '';
+    }
+
+    /**
+     * The Kanboard version constraint from plugin.json: kanboard_version, or
+     * the older compatible_version spelling. '' when neither is a non-empty string.
+     */
+    public static function kanboardConstraint(array $meta): string
+    {
+        foreach (['kanboard_version', 'compatible_version'] as $key) {
+            if (isset($meta[$key]) && is_string($meta[$key]) && trim($meta[$key]) !== '') {
+                return trim($meta[$key]);
+            }
+        }
+        return '';
     }
 
     /**
