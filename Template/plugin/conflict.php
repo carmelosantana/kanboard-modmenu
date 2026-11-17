@@ -1,6 +1,6 @@
 <div class="page-header"><h2><?= t('Plugin conflict') ?></h2></div>
 <div class="confirm">
-    <div class="modmenu-callout modmenu-callout--conflict" role="alert">
+    <div class="modmenu-dep modmenu-callout modmenu-dep--conflict" role="alert">
         <i class="fa fa-exclamation-triangle" aria-hidden="true"></i>
         <span><strong class="modmenu-callout__label"><?= t('Conflict.') ?></strong>
         <?= t('%s conflicts with %s. Disable them and continue?', $this->text->e($name), $this->text->e(implode(', ', $conflicts))) ?></span>

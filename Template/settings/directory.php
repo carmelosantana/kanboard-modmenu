@@ -31,9 +31,10 @@
             <?php if (! empty($p['description'])): ?><p><?= $this->text->e($p['description']) ?></p><?php endif ?>
 
             <?php if (! empty($p['requires'])): ?>
-                <div class="modmenu-dep modmenu-dep--required">
-                    <?= t('Requires:') ?>
-                    <?php foreach ($p['requires'] as $i => $r): ?><?= $i ? ', ' : ' ' ?><?= $this->text->e($r['plugin']) ?><?php if (! empty($r['min_version'])): ?> &ge; <?= $this->text->e($r['min_version']) ?><?php endif ?><?php endforeach ?>
+                <div class="modmenu-dep modmenu-callout modmenu-dep--required">
+                    <i class="fa fa-exclamation-triangle" aria-hidden="true"></i>
+                    <span><strong class="modmenu-callout__label"><?= t('Requires:') ?></strong>
+                    <?php foreach ($p['requires'] as $i => $r): ?><?= $i ? ', ' : ' ' ?><?= $this->text->e($r['plugin']) ?><?php if (! empty($r['min_version'])): ?> &ge; <?= $this->text->e($r['min_version']) ?><?php endif ?><?php endforeach ?></span>
                 </div>
             <?php endif ?>
             <?php if (! empty($p['recommends'])): ?>
@@ -43,15 +44,19 @@
                 </div>
             <?php endif ?>
             <?php if (! empty($p['conflicts'])): ?>
-                <div class="modmenu-dep modmenu-dep--conflict">
-                    <?= t('Conflicts with %s: enable only one.', $this->text->e(implode(', ', $p['conflicts']))) ?>
+                <div class="modmenu-dep modmenu-callout modmenu-dep--conflict">
+                    <i class="fa fa-exclamation-triangle" aria-hidden="true"></i>
+                    <span><strong class="modmenu-callout__label"><?= t('Conflict.') ?></strong>
+                    <?= t('Conflicts with %s: enable only one.', $this->text->e(implode(', ', $p['conflicts']))) ?></span>
                 </div>
             <?php endif ?>
 
             <?php if (! empty($p['screenshots'])): ?>
                 <div class="modmenu-shots">
                     <?php foreach ($p['screenshots'] as $shot): ?>
-                        <img class="modmenu-shot" src="<?= $this->text->e($shot) ?>" alt="">
+                        <a class="modmenu-shot-link" href="<?= $this->text->e($shot) ?>" target="_blank" rel="noopener">
+                            <img class="modmenu-shot" src="<?= $this->text->e($shot) ?>" alt="<?= t('Screenshot of %s', $this->text->e($p['title'] ?? $p['name'])) ?>" loading="lazy">
+                        </a>
                     <?php endforeach ?>
                 </div>
             <?php endif ?>
