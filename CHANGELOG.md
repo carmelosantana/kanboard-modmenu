@@ -5,6 +5,11 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## 1.4.1 — 2026-11-17
+
+### Fixed
+- Installs and updates are tied to their directory entry; kanboard_version is honoured; archive checks are tighter.
+
 ## [1.4.0] — 2026-11-17
 
 ### Added
