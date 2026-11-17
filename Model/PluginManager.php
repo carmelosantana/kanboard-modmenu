@@ -112,7 +112,11 @@ class PluginManager extends Base
         throw new ModMenuException(t('Plugin "%s" is not installed.', $name));
     }
 
-    public function installFromUrl(string $url): string
+    /**
+     * Download and install a plugin archive. When $expectedName is given (a
+     * catalog entry's name), the archive's top-level folder must match it.
+     */
+    public function installFromUrl(string $url, ?string $expectedName = null): string
     {
         if (! preg_match('#^https://#i', $url) || filter_var($url, FILTER_VALIDATE_URL) === false) {
             throw new ModMenuException(t('The download URL must be a valid https:// URL.'));
@@ -127,7 +131,7 @@ class PluginManager extends Base
         file_put_contents($tmp, $body);
 
         try {
-            return $this->installArchive($tmp);
+            return $this->installArchive($tmp, $expectedName);
         } finally {
             @unlink($tmp);
         }
@@ -155,12 +159,16 @@ class PluginManager extends Base
      * install. ModMenu itself must be newer than the installed copy, and keeps
      * its previous copy until the new version has loaded (Plugin::initialize).
      */
-    private function installArchive(string $zipPath): string
+    private function installArchive(string $zipPath, ?string $expectedName = null): string
     {
         $archive = new PluginArchive($this->container);
         $name = $archive->inspect($zipPath);
 
         $this->guardName($name);
+
+        if ($expectedName !== null && $name !== $expectedName) {
+            throw new ModMenuException(t('The archive for "%s" contains "%s". Nothing was installed.', $expectedName, $name));
+        }
 
         if (is_dir($this->disabledDir() . '/' . $name)) {
             throw new ModMenuException(t('"%s" is already installed but disabled. Enable it instead.', $name));
@@ -421,7 +429,7 @@ class PluginManager extends Base
         $result = ['updated' => [], 'failed' => []];
         foreach ($this->updatesAvailable($catalog) as $u) {
             try {
-                $this->installFromUrl($u['download']);
+                $this->installFromUrl($u['download'], $u['plugin']);
                 $result['updated'][] = $u['plugin'];
             } catch (ModMenuException $e) {
                 $result['failed'][$u['plugin']] = $e->getMessage();
@@ -527,12 +535,12 @@ class PluginManager extends Base
                     break;
                 case 'install':
                 case 'update':
-                    $this->installFromUrl((string) $step['download']);
+                    $this->installFromUrl((string) $step['download'], (string) $step['plugin']);
                     break;
             }
         }
         if ($action === 'install') {
-            $this->installFromUrl($target);
+            $this->installFromUrl($target, $name);
         } else {
             $this->enable($name);
         }

@@ -519,4 +519,30 @@ PHP, var_export($this->plugins, true), var_export(dirname(__DIR__) . '/Exception
         $this->assertSame('1.0.0', PluginSwap::readVersion($this->swap->previousDir('Alpha')));
         $this->assertDirectoryDoesNotExist("{$this->plugins}/.modmenu-failed-Alpha");
     }
+
+    public function testVerifyReadsKanboardVersion()
+    {
+        if (\Kanboard\Core\Plugin\Version::isCompatible('>=99.0.0', APP_VERSION)) {
+            $this->markTestSkipped('APP_VERSION (' . APP_VERSION . ') is a dev build; Version::isCompatible() always passes.');
+        }
+        $staged = $this->stage('Alpha', '1.3.0', ['kanboard_version' => '>=99.0.0']);
+        $this->assertThrowsMessage(fn() => $this->swap->verify($staged, 'Alpha'), '99.0.0');
+    }
+
+    public function testVerifyAcceptsSatisfiedKanboardVersion()
+    {
+        $staged = $this->stage('Alpha', '1.3.0', ['kanboard_version' => '>=1.0.0']);
+        $this->assertSame('1.3.0', $this->swap->verify($staged, 'Alpha'));
+    }
+
+    public function testKanboardConstraintPrefersKanboardVersion()
+    {
+        $c = fn (array $m) => \Kanboard\Plugin\ModMenu\Model\PluginSwap::kanboardConstraint($m);
+        $this->assertSame('>=1.2.47', $c(['kanboard_version' => '>=1.2.47']));
+        $this->assertSame('>=1.2.40', $c(['compatible_version' => '>=1.2.40']));
+        $this->assertSame('>=1.2.47', $c(['kanboard_version' => '>=1.2.47', 'compatible_version' => '>=1.0.0']));
+        $this->assertSame('>=1.0.0', $c(['kanboard_version' => ' ', 'compatible_version' => '>=1.0.0']));
+        $this->assertSame('', $c(['kanboard_version' => ['x']]));
+        $this->assertSame('', $c([]));
+    }
 }

@@ -180,7 +180,8 @@ class ModMenuController extends BaseController
         if ($this->promptOnConflict($name, 'install', $catalog[$name]['conflicts'] ?? [])) {
             return;
         }
-        $this->forwardOrConfirm($name, 'install', $target, $catalog);
+        // A named install always takes its download from the catalog.
+        $this->forwardOrConfirm($name, 'install', '', $catalog);
     }
 
     /**
@@ -299,10 +300,16 @@ class ModMenuController extends BaseController
     {
         $this->requireAdmin();
         $this->checkCSRFForm();
-        $url = $this->postValue('archive_url');
+        $expected = $this->postValue('name');
+        $url = (string) ($this->catalog()[$expected]['download'] ?? '');
+        if ($expected === '' || $url === '') {
+            $this->flash->failure(t('This plugin is not in the directory.'));
+            $this->backToDirectory();
+            return;
+        }
         $manager = $this->manager();
         try {
-            $name = $manager->installFromUrl($url);
+            $name = $manager->installFromUrl($url, $expected);
         } catch (ModMenuException $e) {
             $this->flash->failure($e->getMessage());
             $this->backToDirectory();
@@ -359,7 +366,7 @@ class ModMenuController extends BaseController
 
         if ($check['satisfied']) {
             $this->runAndFlash(function (PluginManager $m) use ($name, $action, $target) {
-                $action === 'install' ? $m->installFromUrl($target) : $m->enable($name);
+                $action === 'install' ? $m->installFromUrl($target, $name) : $m->enable($name);
             }, $prefix . ($action === 'install' ? t('Plugin installed.') : t('Plugin enabled.')), $name);
             $action === 'install' ? $this->backToDirectory() : $this->backToInstalled();
             return;
