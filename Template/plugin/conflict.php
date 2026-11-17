@@ -11,13 +11,15 @@
         <?php endforeach ?>
         <li><strong><?= $action === 'install' ? t('Install %s', $this->text->e($name)) : t('Enable %s', $this->text->e($name)) ?></strong></li>
     </ul>
-    <form method="post" action="<?= $this->url->href('ModMenuController', 'resolveConflict', ['plugin' => 'ModMenu']) ?>" class="modmenu-action">
-        <?= $this->form->csrf() ?>
-        <input type="hidden" name="name" value="<?= $this->text->e($name) ?>">
-        <input type="hidden" name="action" value="<?= $this->text->e($action) ?>">
-        <div class="form-actions">
-            <button type="submit" name="decision" value="confirm" class="btn btn-red"><?= t('Disable and continue') ?></button>
-            <button type="submit" name="decision" value="cancel" class="btn"><?= t('Cancel') ?></button>
-        </div>
-    </form>
+    <div class="form-actions modmenu-conflict-actions">
+        <?php foreach (['confirm' => [t('Disable and continue'), 'btn btn-red'], 'cancel' => [t('Cancel'), 'btn']] as $decision => [$label, $class]): ?>
+            <form method="post" action="<?= $this->url->href('ModMenuController', 'resolveConflict', ['plugin' => 'ModMenu']) ?>" class="modmenu-action">
+                <?= $this->form->csrf() ?>
+                <input type="hidden" name="name" value="<?= $this->text->e($name) ?>">
+                <input type="hidden" name="action" value="<?= $this->text->e($action) ?>">
+                <input type="hidden" name="decision" value="<?= $decision ?>">
+                <button type="submit" class="<?= $class ?>"><?= $label ?></button>
+            </form>
+        <?php endforeach ?>
+    </div>
 </div>

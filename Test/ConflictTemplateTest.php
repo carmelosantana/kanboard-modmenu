@@ -65,4 +65,18 @@ class ConflictTemplateTest extends Base
         ]);
         $this->assertStringNotContainsString('Update all', $html);
     }
+
+    // Kanboard's JS disables submit buttons on submit, which drops a button's own
+    // name/value from the post: each decision must travel in a hidden input.
+    public function testConflictPromptPostsTheDecisionAsAHiddenField()
+    {
+        $html = $this->container['template']->render('ModMenu:plugin/conflict', [
+            'name' => 'BattleLobby', 'action' => 'enable', 'conflicts' => ['ShadcnTheme'],
+        ]);
+        $this->assertStringContainsString('BattleLobby conflicts with ShadcnTheme. Disable them and continue?', $html);
+        $this->assertSame(2, substr_count($html, '<form method="post"'), 'one form per decision');
+        $this->assertStringContainsString('<input type="hidden" name="decision" value="confirm">', $html);
+        $this->assertStringContainsString('<input type="hidden" name="decision" value="cancel">', $html);
+        $this->assertStringNotContainsString('<button type="submit" name="decision"', $html);
+    }
 }
