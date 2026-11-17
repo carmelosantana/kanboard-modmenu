@@ -107,8 +107,14 @@ class DirectoryClient extends Base
      */
     public function catalogMap(): array
     {
+        return self::indexByName($this->fetchAll()['plugins']);
+    }
+
+    /** Index merged directory entries by plugin name, skipping nameless ones. */
+    public static function indexByName(array $plugins): array
+    {
         $map = [];
-        foreach ($this->fetchAll()['plugins'] as $entry) {
+        foreach ($plugins as $entry) {
             if (! empty($entry['name'])) {
                 $map[$entry['name']] = $entry;
             }

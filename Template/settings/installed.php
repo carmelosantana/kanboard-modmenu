@@ -30,10 +30,11 @@
                 <div class="modmenu-deps">
                     <?php foreach ($p['unmet_deps'] as $dep): ?>
                         <?php $hard = $dep['kind'] === 'requires'; ?>
-                        <div class="modmenu-dep modmenu-dep--<?= $hard ? 'required' : 'recommended' ?>">
+                        <div class="modmenu-dep <?= $hard ? 'modmenu-callout modmenu-dep--required' : 'modmenu-dep--recommended' ?>">
+                            <?php if ($hard): ?><i class="fa fa-exclamation-triangle" aria-hidden="true"></i><?php endif ?>
                             <span class="modmenu-dep__label">
                                 <?php if ($hard): ?>
-                                    <?= t('Missing requirement: %s', $this->text->e($dep['plugin'])) ?>
+                                    <strong class="modmenu-callout__label"><?= t('Missing requirement:') ?></strong> <?= $this->text->e($dep['plugin']) ?>
                                 <?php else: ?>
                                     <?= t('Works better with %s', $this->text->e($dep['plugin'])) ?>
                                 <?php endif ?>
@@ -63,8 +64,10 @@
             <?php endif ?>
 
             <?php if (! empty($p['active_conflicts'])): ?>
-                <div class="modmenu-dep modmenu-dep--conflict">
-                    <?= t('Conflicts with %s: disable one.', $this->text->e(implode(', ', $p['active_conflicts']))) ?>
+                <div class="modmenu-dep modmenu-callout modmenu-dep--conflict">
+                    <i class="fa fa-exclamation-triangle" aria-hidden="true"></i>
+                    <span><strong class="modmenu-callout__label"><?= t('Conflict.') ?></strong>
+                    <?= t('Conflicts with %s: disable one.', $this->text->e(implode(', ', $p['active_conflicts']))) ?></span>
                 </div>
             <?php endif ?>
 

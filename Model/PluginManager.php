@@ -338,16 +338,18 @@ class PluginManager extends Base
 
     /**
      * Installed, ACTIVE plugins that conflict with $name, declared on either
-     * side. $name need not be installed (Browse entries). Warning-only:
-     * conflicts never block install, enable or any other operation.
+     * side. $name need not be installed (Browse entries); $declared adds the
+     * conflicts a catalog entry lists for a plugin that is not installed yet.
+     * The model never blocks on conflicts: the controller asks the admin
+     * before enabling or installing (see disableConflicts()).
      */
-    public function activeConflicts(string $name): array
+    public function activeConflicts(string $name, array $declared = []): array
     {
         $installed = $this->listInstalled();
-        $mine = [];
+        $mine = self::normalizeConflicts($declared);
         foreach ($installed as $p) {
             if ($p['name'] === $name) {
-                $mine = $p['conflicts'];
+                $mine = array_merge($mine, $p['conflicts']);
             }
         }
 
@@ -365,8 +367,72 @@ class PluginManager extends Base
     }
 
     /**
-     * Non-blocking warning for install/enable flashes: '' when $name has no
-     * active conflicts, else "Conflicts with A, B: disable one."
+     * Disable every active plugin that conflicts with $name, so $name can be
+     * activated. Returns the names disabled. Stops on the first failure (for
+     * example a conflicting plugin other active plugins require).
+     */
+    public function disableConflicts(string $name, array $declared = []): array
+    {
+        $conflicts = $this->activeConflicts($name, $declared);
+        foreach ($conflicts as $other) {
+            $this->disable($other);
+        }
+        return $conflicts;
+    }
+
+    /**
+     * Active installed plugins the catalog has a newer version of, as
+     * [plugin, from, to, download], sorted by name with ModMenu last so it
+     * replaces itself only after everything else has updated. Disabled
+     * plugins are skipped: an install over a disabled copy is refused.
+     */
+    public function updatesAvailable(array $catalog): array
+    {
+        $out = [];
+        $self = null;
+        foreach ($this->listInstalled() as $p) {
+            $entry = $catalog[$p['name']] ?? null;
+            if ($p['status'] !== 'active' || ! is_array($entry) || empty($entry['download'])) {
+                continue;
+            }
+            $to = (string) ($entry['version'] ?? '');
+            if (! self::hasUpdate((string) $p['version'], $to)) {
+                continue;
+            }
+            $row = ['plugin' => $p['name'], 'from' => (string) $p['version'], 'to' => $to, 'download' => (string) $entry['download']];
+            if ($p['name'] === self::SELF) {
+                $self = $row;
+            } else {
+                $out[] = $row;
+            }
+        }
+        if ($self !== null) {
+            $out[] = $self;
+        }
+        return $out;
+    }
+
+    /**
+     * Install every available update. A failure is recorded and the rest
+     * still run. Returns ['updated' => [names], 'failed' => [name => message]].
+     */
+    public function updateAll(array $catalog): array
+    {
+        $result = ['updated' => [], 'failed' => []];
+        foreach ($this->updatesAvailable($catalog) as $u) {
+            try {
+                $this->installFromUrl($u['download']);
+                $result['updated'][] = $u['plugin'];
+            } catch (ModMenuException $e) {
+                $result['failed'][$u['plugin']] = $e->getMessage();
+            }
+        }
+        return $result;
+    }
+
+    /**
+     * Warning appended to update flashes: '' when $name has no active
+     * conflicts, else "Conflicts with A, B: disable one."
      */
     public function conflictWarning(string $name): string
     {

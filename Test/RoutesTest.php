@@ -30,6 +30,8 @@ class RoutesTest extends Base
             ['config/modmenu/plugin/uninstall', 'ModMenuController', 'uninstall'],
             ['config/modmenu/plugin/install', 'ModMenuController', 'install'],
             ['config/modmenu/plugin/update', 'ModMenuController', 'update'],
+            ['config/modmenu/plugin/update-all', 'ModMenuController', 'updateAll'],
+            ['config/modmenu/plugin/conflict', 'ModMenuController', 'resolveConflict'],
             ['config/modmenu/upload', 'UploadController', 'upload'],
         ];
     }

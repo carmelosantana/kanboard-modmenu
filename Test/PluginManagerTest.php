@@ -412,7 +412,7 @@ class PluginManagerTest extends Base
         }
     }
 
-    // ── conflicts (warn, never block) ──────────────────────────────────────
+    // ── conflicts (the model never blocks; the controller asks) ──────────────────────────────────────
 
     private function installedByName(): array
     {
@@ -580,5 +580,91 @@ class PluginManagerTest extends Base
         $this->assertSame($before, file_get_contents("{$this->active}/Alpha/Plugin.php"));
         $this->assertStringContainsString('1.0.0', file_get_contents("{$this->active}/Alpha/plugin.json"));
         $this->assertSame([], $this->dotDirs('.modmenu-'));
+    }
+
+    // ── update all ─────────────────────────────────────────────────────────
+
+    /** Point the manager's HTTP client at a url => zip-bytes map ('' = download failure). */
+    private function stubDownloads(array $urlToZipPath): void
+    {
+        $client = $this->getMockBuilder(\Kanboard\Core\Http\Client::class)
+            ->setConstructorArgs([$this->container])->onlyMethods(['get'])->getMock();
+        $client->method('get')->willReturnCallback(
+            fn (string $url) => isset($urlToZipPath[$url]) && $urlToZipPath[$url] !== '' ? file_get_contents($urlToZipPath[$url]) : ''
+        );
+        $this->container['httpClient'] = $client;
+        $this->manager = (new PluginManager($this->container))->setDirectories($this->active, $this->disabled);
+    }
+
+    public function testUpdatesAvailableListsActiveOutdatedPluginsWithModMenuLast()
+    {
+        $this->seedPlugin($this->active, 'ModMenu', '1.0.0');
+        $this->seedPlugin($this->active, 'Zeta', '1.0.0');
+        $this->seedPlugin($this->active, 'Alpha', '1.0.0');
+        $this->seedPlugin($this->active, 'Current', '2.0.0');
+        $this->seedPlugin($this->disabled, 'Parked', '1.0.0');
+        $catalog = [
+            'ModMenu' => ['version' => '1.1.0', 'download' => 'https://x/mm.zip'],
+            'Zeta'    => ['version' => '1.2.0', 'download' => 'https://x/zeta.zip'],
+            'Alpha'   => ['version' => '1.0.1', 'download' => 'https://x/alpha.zip'],
+            'Current' => ['version' => '2.0.0', 'download' => 'https://x/cur.zip'],
+            'Parked'  => ['version' => '9.0.0', 'download' => 'https://x/parked.zip'],
+            'Missing' => ['version' => '1.0.0', 'download' => 'https://x/missing.zip'],
+        ];
+
+        $updates = $this->manager->updatesAvailable($catalog);
+
+        $this->assertSame(['Alpha', 'Zeta', 'ModMenu'], array_column($updates, 'plugin'), 'active + outdated only; ModMenu last so it swaps itself after the rest');
+        $this->assertSame(['plugin' => 'Alpha', 'from' => '1.0.0', 'to' => '1.0.1', 'download' => 'https://x/alpha.zip'], $updates[0]);
+    }
+
+    public function testUpdateAllInstallsEachUpdateAndKeepsGoingPastAFailure()
+    {
+        $this->seedPlugin($this->active, 'Alpha', '1.0.0');
+        $this->seedPlugin($this->active, 'Beta', '1.0.0');
+        $this->seedPlugin($this->active, 'Gamma', '1.0.0');
+        $this->stubDownloads([
+            'https://x/alpha.zip' => $this->makeZip('Alpha', '1.1.0'),
+            'https://x/beta.zip'  => '',
+            'https://x/gamma.zip' => $this->makeZip('Gamma', '1.1.0'),
+        ]);
+        $catalog = [
+            'Alpha' => ['version' => '1.1.0', 'download' => 'https://x/alpha.zip'],
+            'Beta'  => ['version' => '1.1.0', 'download' => 'https://x/beta.zip'],
+            'Gamma' => ['version' => '1.1.0', 'download' => 'https://x/gamma.zip'],
+        ];
+
+        $result = $this->manager->updateAll($catalog);
+
+        $this->assertSame(['Alpha', 'Gamma'], $result['updated']);
+        $this->assertSame(['Beta'], array_keys($result['failed']));
+        $versions = array_column($this->manager->listInstalled(), 'version', 'name');
+        $this->assertSame(['Alpha' => '1.1.0', 'Beta' => '1.0.0', 'Gamma' => '1.1.0'], $versions);
+    }
+
+    // ── conflict gate helpers ──────────────────────────────────────────────
+
+    public function testActiveConflictsAlsoHonoursCatalogDeclaredConflicts()
+    {
+        // Installing "New" from Browse: the conflict is declared only in the catalog entry.
+        $this->seedPlugin($this->active, 'Alpha', '1.0.0');
+        $this->seedPlugin($this->disabled, 'Beta', '1.0.0');
+        $this->assertSame(['Alpha'], $this->manager->activeConflicts('New', ['Alpha', 'Beta']));
+        $this->assertSame([], $this->manager->activeConflicts('New'));
+    }
+
+    public function testDisableConflictsParksEveryActiveConflict()
+    {
+        $this->seedPluginWithDeps($this->disabled, 'Theme', '1.0.0', [], [], ['OtherTheme', 'ThirdTheme']);
+        $this->seedPlugin($this->active, 'OtherTheme', '1.0.0');
+        $this->seedPlugin($this->active, 'ThirdTheme', '1.0.0');
+        $this->seedPlugin($this->active, 'Bystander', '1.0.0');
+
+        $this->assertSame(['OtherTheme', 'ThirdTheme'], $this->manager->disableConflicts('Theme'));
+
+        $this->assertSame([], $this->manager->activeConflicts('Theme'));
+        $this->assertDirectoryExists("{$this->disabled}/OtherTheme");
+        $this->assertDirectoryExists("{$this->disabled}/ThirdTheme");
+        $this->assertDirectoryExists("{$this->active}/Bystander");
     }
 }

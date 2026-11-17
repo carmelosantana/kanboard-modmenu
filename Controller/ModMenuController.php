@@ -24,7 +24,7 @@ class ModMenuController extends BaseController
         }
     }
 
-    private function manager(): PluginManager
+    protected function manager(): PluginManager
     {
         return new PluginManager($this->container);
     }
@@ -66,8 +66,8 @@ class ModMenuController extends BaseController
         $this->requireAdmin();
         $result = (new DirectoryClient($this->container))->fetchAll();
 
-        // Conflicts are warning-only: show declared ones plus any active
-        // installed plugin that declares a conflict with this entry.
+        // Show declared conflicts plus any active installed plugin that declares
+        // a conflict with this entry. Install/enable asks before acting on them.
         $manager = $this->manager();
         foreach ($result['plugins'] as &$p) {
             $declared = $p['conflicts'] ?? [];
@@ -82,6 +82,7 @@ class ModMenuController extends BaseController
             'tab' => 'browse',
             'plugins' => $result['plugins'],
             'errors' => $result['errors'],
+            'updates' => $manager->updatesAvailable(DirectoryClient::indexByName($result['plugins'])),
             'is_configured' => $manager->isConfigured(),
         ]));
     }
@@ -138,7 +139,11 @@ class ModMenuController extends BaseController
     {
         $this->requireAdmin();
         $this->checkCSRFForm();
-        $this->forwardOrConfirm($this->postValue('name'), 'enable', '');
+        $name = $this->postValue('name');
+        if ($this->promptOnConflict($name, 'enable', [])) {
+            return;
+        }
+        $this->forwardOrConfirm($name, 'enable', '');
     }
 
     public function disable()
@@ -171,7 +176,84 @@ class ModMenuController extends BaseController
             $this->backToDirectory();
             return;
         }
-        $this->forwardOrConfirm($name, 'install', $target);
+        $catalog = $this->catalog();
+        if ($this->promptOnConflict($name, 'install', $catalog[$name]['conflicts'] ?? [])) {
+            return;
+        }
+        $this->forwardOrConfirm($name, 'install', $target, $catalog);
+    }
+
+    /**
+     * Submit of the conflict prompt. Re-derives the conflicts server-side.
+     * Confirm: disable every active conflict, then continue into the normal
+     * dependency flow. Cancel: the plugin stays inactive.
+     */
+    public function resolveConflict()
+    {
+        $this->requireAdmin();
+        $this->checkCSRFForm();
+        $name    = $this->postValue('name');
+        $action  = $this->postValue('action') === 'install' ? 'install' : 'enable';
+        $manager = $this->manager();
+        $catalog = $action === 'install' ? $this->catalog() : [];
+        $declared = $catalog[$name]['conflicts'] ?? [];
+
+        if ($this->postValue('decision') !== 'confirm') {
+            $conflicts = $manager->activeConflicts($name, $declared);
+            $this->flash->failure(t('%s stays inactive until %s is disabled.', $name, implode(', ', $conflicts)));
+            $action === 'install' ? $this->backToDirectory() : $this->backToInstalled();
+            return;
+        }
+
+        try {
+            $disabled = $manager->disableConflicts($name, $declared);
+        } catch (ModMenuException $e) {
+            $this->flash->failure($e->getMessage());
+            $action === 'install' ? $this->backToDirectory() : $this->backToInstalled();
+            return;
+        }
+
+        $notice = $disabled === [] ? '' : t('Disabled %s.', implode(', ', $disabled));
+        $this->forwardOrConfirm($name, $action, '', $action === 'install' ? $catalog : null, $notice);
+    }
+
+    /**
+     * Update every active plugin the directory has a newer version of.
+     * ModMenu itself goes last, so after it only flash/redirect code runs.
+     */
+    public function updateAll()
+    {
+        $this->requireAdmin();
+        $this->checkCSRFForm();
+        $result  = $this->manager()->updateAll($this->catalog());
+        $updated = $result['updated'];
+
+        $parts = [];
+        if ($updated !== []) {
+            $parts[] = t('Updated %d: %s.', count($updated), implode(', ', $updated));
+        }
+        if (in_array(PluginManager::SELF, $updated, true)) {
+            $version = (string) PluginSwap::readVersion(PLUGINS_DIR . '/' . PluginManager::SELF);
+            $parts[] = t('ModMenu updated to %s. The previous copy is removed once the new version has loaded.', $version);
+        }
+        if ($result['failed'] !== []) {
+            $lines = [];
+            foreach ($result['failed'] as $plugin => $message) {
+                $lines[] = $plugin . ' (' . $message . ')';
+            }
+            $parts[] = t('Could not update %s.', implode('; ', $lines));
+        }
+
+        // Core renders only one flash (success wins), so a partial run is one failure message.
+        if ($parts === []) {
+            $this->flash->success(t('Everything is up to date.'));
+        } elseif ($result['failed'] !== []) {
+            $this->flash->failure(implode(' ', $parts));
+        } else {
+            $this->flash->success(implode(' ', $parts));
+        }
+
+        in_array(PluginManager::SELF, $updated, true) ? $this->backToInstalled() : $this->backToDirectory();
     }
 
     public function resolve()
@@ -187,6 +269,14 @@ class ModMenuController extends BaseController
         $requires = $this->requiresFor($name, $action, $catalog, $manager);
         $check    = $manager->forwardCheck($requires, $catalog);
         $target   = $action === 'install' ? (string) ($catalog[$name]['download'] ?? '') : '';
+
+        // The conflict prompt must not be bypassable by posting here directly.
+        $conflicts = $manager->activeConflicts($name, $action === 'install' ? ($catalog[$name]['conflicts'] ?? []) : []);
+        if ($conflicts !== []) {
+            $this->flash->failure(t('%s conflicts with %s. Disable them first.', $name, implode(', ', $conflicts)));
+            $action === 'install' ? $this->backToDirectory() : $this->backToInstalled();
+            return;
+        }
 
         // Guard against the catalog changing between the confirm render and this
         // submit (TOCTOU): if a requirement is no longer auto-resolvable, refuse
@@ -235,7 +325,7 @@ class ModMenuController extends BaseController
 
     // ── dependency helpers ──────────────────────────────────────────────────
 
-    private function catalog(): array
+    protected function catalog(): array
     {
         return (new DirectoryClient($this->container))->catalogMap();
     }
@@ -253,10 +343,11 @@ class ModMenuController extends BaseController
      * Forward gate for enable/install: act directly when satisfied, block when a
      * requirement is unresolvable, otherwise render the resolve-plan confirmation.
      */
-    private function forwardOrConfirm(string $name, string $action, string $target): void
+    private function forwardOrConfirm(string $name, string $action, string $target, ?array $catalog = null, string $notice = ''): void
     {
         $manager  = $this->manager();
-        $catalog  = $this->catalog();
+        $catalog  = $catalog ?? $this->catalog();
+        $prefix   = $notice === '' ? '' : $notice . ' ';
         $requires = $this->requiresFor($name, $action, $catalog, $manager);
 
         // Resolve the target's own download URL when installing without one.
@@ -269,23 +360,45 @@ class ModMenuController extends BaseController
         if ($check['satisfied']) {
             $this->runAndFlash(function (PluginManager $m) use ($name, $action, $target) {
                 $action === 'install' ? $m->installFromUrl($target) : $m->enable($name);
-            }, $action === 'install' ? t('Plugin installed.') : t('Plugin enabled.'), $name);
+            }, $prefix . ($action === 'install' ? t('Plugin installed.') : t('Plugin enabled.')), $name);
             $action === 'install' ? $this->backToDirectory() : $this->backToInstalled();
             return;
         }
 
         if ($check['blocked']) {
-            $this->flash->failure(t('"%s" has requirements that cannot be installed automatically. Install them manually first.', $name));
+            $this->flash->failure($prefix . t('"%s" has requirements that cannot be installed automatically. Install them manually first.', $name));
             $action === 'install' ? $this->backToDirectory() : $this->backToInstalled();
             return;
         }
 
+        if ($notice !== '') {
+            $this->flash->success($notice);
+        }
         $this->response->html($this->helper->layout->config('ModMenu:plugin/resolve', [
             'title'  => t('ModMenu'),
             'name'   => $name,
             'action' => $action,
             'plan'   => $check['plan'],
         ]));
+    }
+
+    /**
+     * Conflict gate for enable/install: when X conflicts with an active plugin,
+     * render the confirm page instead of acting. Returns true when it rendered.
+     */
+    private function promptOnConflict(string $name, string $action, array $declared): bool
+    {
+        $conflicts = $this->manager()->activeConflicts($name, $declared);
+        if ($conflicts === []) {
+            return false;
+        }
+        $this->response->html($this->helper->layout->config('ModMenu:plugin/conflict', [
+            'title'     => t('ModMenu'),
+            'name'      => $name,
+            'action'    => $action,
+            'conflicts' => $conflicts,
+        ]));
+        return true;
     }
 
     private function backToDirectory()
@@ -305,18 +418,26 @@ class ModMenuController extends BaseController
      * filtered POST array. The value is already URL-decoded by PHP — applying
      * urldecode() would double-decode a literal '%' (e.g. '%20' in a
      * release-asset filename).
+     *
+     * getValues() unsets csrf_token from the request as it reads, so a second
+     * call returns []. Read the body once per request and reuse it.
      */
     private function postValue(string $key): string
     {
-        $values = $this->request->getValues();
-        return isset($values[$key]) ? (string) $values[$key] : '';
+        if ($this->postValues === null) {
+            $this->postValues = $this->request->getValues();
+        }
+        return isset($this->postValues[$key]) ? (string) $this->postValues[$key] : '';
     }
+
+    /** @var array|null */
+    private $postValues;
 
     /**
      * Run a manager operation and flash the outcome. When $warnFor names a
      * plugin (or $warnForResult takes the plugin name the op returns), any
-     * active conflict is appended to the success message — a warning only,
-     * never a block.
+     * conflict still active afterwards is appended to the success message.
+     * (Enable/install ask first via promptOnConflict(); this covers updates.)
      */
     private function runAndFlash(callable $op, string $successMessage, string $warnFor = '', bool $warnForResult = false): void
     {
