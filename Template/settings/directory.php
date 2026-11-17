@@ -5,6 +5,14 @@
     <div class="modmenu-banner"><?= t('Could not load source: %s', $this->text->e($err['url'])) ?> — <?= $this->text->e($err['message']) ?></div>
 <?php endforeach ?>
 
+<?php if (! empty($updates) && $is_configured): ?>
+    <form method="post" class="modmenu-update-all" action="<?= $this->url->href('ModMenuController', 'updateAll', ['plugin' => 'ModMenu']) ?>">
+        <?= $this->form->csrf() ?>
+        <button type="submit" class="btn btn-blue"><i class="fa fa-refresh" aria-hidden="true"></i> <?= t('Update all (%d)', count($updates)) ?></button>
+        <span class="modmenu-card__status"><?= $this->text->e(implode(', ', array_map(static fn ($u) => $u['plugin'] . ' ' . $u['from'] . ' → ' . $u['to'], $updates))) ?></span>
+    </form>
+<?php endif ?>
+
 <?php if (empty($plugins)): ?>
     <p class="alert"><?= t('No plugins available from the configured sources.') ?></p>
 <?php else: ?>

@@ -82,6 +82,7 @@ class ModMenuController extends BaseController
             'tab' => 'browse',
             'plugins' => $result['plugins'],
             'errors' => $result['errors'],
+            'updates' => $manager->updatesAvailable(DirectoryClient::indexByName($result['plugins'])),
             'is_configured' => $manager->isConfigured(),
         ]));
     }

@@ -69,6 +69,8 @@ class Plugin extends Base
         $this->route->addRoute('config/modmenu/plugin/uninstall', 'ModMenuController', 'uninstall', 'ModMenu');
         $this->route->addRoute('config/modmenu/plugin/install', 'ModMenuController', 'install', 'ModMenu');
         $this->route->addRoute('config/modmenu/plugin/update', 'ModMenuController', 'update', 'ModMenu');
+        $this->route->addRoute('config/modmenu/plugin/update-all', 'ModMenuController', 'updateAll', 'ModMenu');
+        $this->route->addRoute('config/modmenu/plugin/conflict', 'ModMenuController', 'resolveConflict', 'ModMenu');
         $this->route->addRoute('config/modmenu/upload', 'UploadController', 'upload', 'ModMenu');
     }
 

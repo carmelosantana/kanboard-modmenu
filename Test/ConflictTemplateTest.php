@@ -47,4 +47,22 @@ class ConflictTemplateTest extends Base
         ]);
         $this->assertStringContainsString('Conflicts with ShadcnTheme: enable only one.', $html);
     }
+
+    public function testBrowseTabShowsUpdateAllWithCountWhenUpdatesExist()
+    {
+        $html = $this->container['template']->render('ModMenu:settings/directory', [
+            'tab' => 'browse', 'errors' => [], 'is_configured' => true, 'plugins' => [],
+            'updates' => [['plugin' => 'A', 'from' => '1.0.0', 'to' => '1.1.0', 'download' => 'x'], ['plugin' => 'B', 'from' => '1.0.0', 'to' => '2.0.0', 'download' => 'y']],
+        ]);
+        $this->assertStringContainsString('updateAll', $html);
+        $this->assertStringContainsString('Update all (2)', $html);
+    }
+
+    public function testBrowseTabHidesUpdateAllWithoutUpdates()
+    {
+        $html = $this->container['template']->render('ModMenu:settings/directory', [
+            'tab' => 'browse', 'errors' => [], 'is_configured' => true, 'plugins' => [], 'updates' => [],
+        ]);
+        $this->assertStringNotContainsString('Update all', $html);
+    }
 }
