@@ -56,7 +56,32 @@ class ConflictTemplateTest extends Base
             'updates' => [['plugin' => 'A', 'from' => '1.0.0', 'to' => '1.1.0', 'download' => 'x'], ['plugin' => 'B', 'from' => '1.0.0', 'to' => '2.0.0', 'download' => 'y']],
         ]);
         $this->assertStringContainsString('updateAll', $html);
-        $this->assertStringContainsString('Update all (2)', $html);
+        $this->assertStringContainsString('2 updates available', $html);
+        $this->assertSame(2, substr_count($html, 'modmenu-updates__name'), 'one list row per pending update');
+        $this->assertMatchesRegularExpression('/>B<.*2\.0\.0/s', $html);
+    }
+
+    public function testBrowseTabSaysOneUpdateInTheSingular()
+    {
+        $html = $this->container['template']->render('ModMenu:settings/directory', [
+            'tab' => 'browse', 'errors' => [], 'is_configured' => true, 'plugins' => [],
+            'updates' => [['plugin' => 'A', 'from' => '1.0.0', 'to' => '1.1.0', 'download' => 'x']],
+        ]);
+        $this->assertStringContainsString('1 update available', $html);
+    }
+
+    public function testBrowseCardShowsWarningsBeforeTheDescription()
+    {
+        $html = $this->container['template']->render('ModMenu:settings/directory', [
+            'tab' => 'browse', 'errors' => [], 'is_configured' => true, 'updates' => [],
+            'plugins' => [[
+                'name' => 'BattleLobby', 'version' => '1.0.0', 'status' => 'available',
+                'description' => 'DESCRIPTION', 'conflicts' => ['ShadcnTheme'],
+                'requires' => [['plugin' => 'AiConnector', 'min_version' => '1.0.0']],
+            ]],
+        ]);
+        $this->assertLessThan(strpos($html, 'DESCRIPTION'), strpos($html, 'Requires:'));
+        $this->assertLessThan(strpos($html, 'DESCRIPTION'), strpos($html, 'Conflicts with ShadcnTheme'));
     }
 
     public function testBrowseTabHidesUpdateAllWithoutUpdates()

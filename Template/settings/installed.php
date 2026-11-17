@@ -18,14 +18,9 @@
             <span class="modmenu-badge modmenu-badge--<?= $p['status'] === 'disabled' ? 'disabled' : 'installed' ?>">
                 <?= $p['status'] === 'disabled' ? t('Disabled') : t('Active') ?>
             </span>
-            <div class="modmenu-card__status">
-                <?= $this->text->e($p['name']) ?> · v<?= $this->text->e($p['version']) ?>
-                <?php if (! empty($p['author'])): ?> · <?= $this->text->e($p['author']) ?><?php endif ?>
-            </div>
-            <?php if (! empty($p['description'])): ?>
-                <p><?= $this->text->e($p['description']) ?></p>
-            <?php endif ?>
 
+            <?php if (! empty($p['unmet_deps']) || ! empty($p['active_conflicts'])): ?>
+            <div class="modmenu-card__alerts">
             <?php if (! empty($p['unmet_deps'])): ?>
                 <div class="modmenu-deps">
                     <?php foreach ($p['unmet_deps'] as $dep): ?>
@@ -62,7 +57,6 @@
                     <?php endforeach ?>
                 </div>
             <?php endif ?>
-
             <?php if (! empty($p['active_conflicts'])): ?>
                 <div class="modmenu-dep modmenu-callout modmenu-dep--conflict">
                     <i class="fa fa-exclamation-triangle" aria-hidden="true"></i>
@@ -70,6 +64,16 @@
                     <?= t('Conflicts with %s: disable one.', $this->text->e(implode(', ', $p['active_conflicts']))) ?></span>
                 </div>
             <?php endif ?>
+            </div>
+            <?php endif ?>
+            <div class="modmenu-card__status">
+                <?= $this->text->e($p['name']) ?> · v<?= $this->text->e($p['version']) ?>
+                <?php if (! empty($p['author'])): ?> · <?= $this->text->e($p['author']) ?><?php endif ?>
+            </div>
+            <?php if (! empty($p['description'])): ?>
+                <p><?= $this->text->e($p['description']) ?></p>
+            <?php endif ?>
+
 
             <?php if ($p['name'] !== $self_name): ?>
                 <div class="modmenu-actions">
