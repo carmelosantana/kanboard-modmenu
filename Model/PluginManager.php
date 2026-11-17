@@ -431,8 +431,8 @@ class PluginManager extends Base
     }
 
     /**
-     * Non-blocking warning for install/enable flashes: '' when $name has no
-     * active conflicts, else "Conflicts with A, B: disable one."
+     * Warning appended to update flashes: '' when $name has no active
+     * conflicts, else "Conflicts with A, B: disable one."
      */
     public function conflictWarning(string $name): string
     {

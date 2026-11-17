@@ -5,6 +5,24 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.4.0] — 2026-11-17
+
+### Added
+
+- **Update all.** Browse shows **Update all (N)** when active plugins have newer versions in the directory. Each one goes through the verified swap; a failure does not stop the rest, and the result names what was updated and what failed. ModMenu itself goes last and returns you to the Installed tab, like a single self-update.
+- **Conflict prompt.** Enabling or installing a plugin while a conflicting plugin is active now asks first: "X conflicts with A, B. Disable them and continue?" Confirm disables them, then carries on into the usual dependency flow; Cancel leaves X inactive. For an install, the directory entry's `conflicts` count as well. The dependency-confirm step refuses while a conflict is active, so the prompt cannot be skipped.
+
+### Changed
+
+- Required-plugin and conflict notices are callouts (tinted background, border, accent, warning icon, bold label) whose text keeps the theme's colour, so they read on light and dark themes. "Recommends" stays a quiet line.
+- Browse screenshots are uniform 16:10 thumbnails in a wrapping row; each opens the full image in a new tab.
+
+### Fixed
+
+- A form action that read more than one posted field got `''` from the second read (core `getValues()` strips the CSRF token as it reads), so the dependency-confirm step always ran as "enable", even for an install. Posted fields are now read once per request.
+
+---
+
 ## [1.3.3] — 2026-11-12
 
 ### Fixed

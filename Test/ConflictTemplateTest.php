@@ -5,7 +5,8 @@ require_once 'tests/units/Base.php';
 use KanboardTests\units\Base;
 
 /**
- * Conflicts render as non-blocking hints on the Installed and Browse tabs.
+ * Conflicts render as callouts on the Installed and Browse tabs, and as the
+ * confirm page that enable/install shows first.
  */
 class ConflictTemplateTest extends Base
 {

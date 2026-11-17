@@ -16,7 +16,7 @@ ModMenu adds a **Settings → ModMenu** page with four tabs:
 | Tab | Purpose |
 |---|---|
 | **Installed** | Lists every plugin currently in `plugins/` (active) or `data/modmenu_disabled/` (disabled), with enable, disable, and remove actions. |
-| **Browse** | Fetches plugin listings from the configured directory sources and shows install/update buttons for each entry. |
+| **Browse** | Fetches plugin listings from the configured directory sources and shows install/update buttons for each entry, linked screenshot thumbnails, and an **Update all (N)** button when installed plugins have updates. |
 | **Upload** | WordPress-style zip upload — drop a `.zip` archive to install a plugin directly. |
 | **Sources** | Manage the directory source URLs that Browse fetches from. Ships with one bundled default source. |
 
@@ -83,6 +83,13 @@ ModMenu surfaces the appropriate error message when a folder-move fails so the
 cause is clear.
 
 ---
+
+## Update all
+
+When the directory has newer versions of active plugins, Browse shows **Update all (N)**
+with the list of `from → to` versions. It updates each one through the same verified swap
+as a single update and keeps going past a failure; the result lists what was updated and
+what failed. ModMenu itself, if outdated, is updated last.
 
 ## Self-update
 
@@ -205,7 +212,7 @@ Each entry in the JSON array is an object. All fields are optional except `name`
 | `screenshots` | array | List of screenshot URLs (or paths relative to the `plugins.json` URL). Displayed as thumbnails in the Browse tab. |
 | `requires` | array | Hard dependencies — dep objects `{ "plugin": "Name", "min_version": "1.1.0" }`. ModMenu blocks activation until each is installed, active, and ≥ `min_version`, offering a one-click resolve. Reverse-protected: a required plugin can't be disabled/removed while an active dependent needs it. |
 | `recommends` | array | Soft dependencies — same dep-object shape plus an optional `"reason"`. Non-blocking: ModMenu shows a "works better with" hint and a one-click install, but activation proceeds without them. |
-| `conflicts` | array | Plugin names that should not run alongside this one (e.g. two themes), like `["ShadcnTheme"]`. Non-blocking: ModMenu warns on install/enable and flags active pairs on the Installed and Browse tabs. |
+| `conflicts` | array | Plugin names that should not run alongside this one (e.g. two themes), like `["ShadcnTheme"]`. Enabling or installing a plugin while a conflicting one is active asks first; ModMenu also flags active pairs on the Installed and Browse tabs. |
 
 ### Dependencies
 
@@ -221,7 +228,7 @@ A plugin declares dependencies on other plugins in its own `plugin.json` (author
 
 - **`requires`** blocks enable/install until satisfied (with a one-click resolve that installs/enables the chain), and blocks disable/uninstall of anything an active plugin still needs.
 - **`recommends`** only prompts an easy install; it never blocks.
-- **`conflicts`** only warns (on install, enable, and on the Installed/Browse tabs); it never blocks.
+- **`conflicts`** asks before enable/install: "X conflicts with A, B. Disable them and continue?" Confirm disables them and carries on (dependency resolution included); Cancel leaves X inactive. Either side can declare the conflict, and for an install the directory entry's `conflicts` count too. Updates of already-active plugins are not gated; the Installed and Browse tabs flag active pairs.
 - All three are optional and backward-compatible — a plugin without them behaves exactly as before.
 
 Example:

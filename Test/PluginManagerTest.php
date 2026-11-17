@@ -412,7 +412,7 @@ class PluginManagerTest extends Base
         }
     }
 
-    // ── conflicts (warn, never block) ──────────────────────────────────────
+    // ── conflicts (the model never blocks; the controller asks) ──────────────────────────────────────
 
     private function installedByName(): array
     {
