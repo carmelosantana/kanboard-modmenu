@@ -225,32 +225,35 @@ class ModMenuController extends BaseController
     {
         $this->requireAdmin();
         $this->checkCSRFForm();
-        $result = $this->manager()->updateAll($this->catalog());
+        $result  = $this->manager()->updateAll($this->catalog());
+        $updated = $result['updated'];
 
+        $parts = [];
+        if ($updated !== []) {
+            $parts[] = t('Updated %d: %s.', count($updated), implode(', ', $updated));
+        }
+        if (in_array(PluginManager::SELF, $updated, true)) {
+            $version = (string) PluginSwap::readVersion(PLUGINS_DIR . '/' . PluginManager::SELF);
+            $parts[] = t('ModMenu updated to %s. The previous copy is removed once the new version has loaded.', $version);
+        }
         if ($result['failed'] !== []) {
             $lines = [];
             foreach ($result['failed'] as $plugin => $message) {
                 $lines[] = $plugin . ' (' . $message . ')';
             }
-            $this->flash->failure(t('Could not update %s.', implode('; ', $lines)));
+            $parts[] = t('Could not update %s.', implode('; ', $lines));
         }
 
-        $updated = $result['updated'];
-        $message = $updated === []
-            ? ($result['failed'] === [] ? t('Everything is up to date.') : '')
-            : t('Updated %d: %s.', count($updated), implode(', ', $updated));
-
-        if (in_array(PluginManager::SELF, $updated, true)) {
-            $version = (string) PluginSwap::readVersion(PLUGINS_DIR . '/' . PluginManager::SELF);
-            $this->flash->success($message . ' ' . t('ModMenu updated to %s. The previous copy is removed once the new version has loaded.', $version));
-            $this->backToInstalled();
-            return;
+        // Core renders only one flash (success wins), so a partial run is one failure message.
+        if ($parts === []) {
+            $this->flash->success(t('Everything is up to date.'));
+        } elseif ($result['failed'] !== []) {
+            $this->flash->failure(implode(' ', $parts));
+        } else {
+            $this->flash->success(implode(' ', $parts));
         }
 
-        if ($message !== '') {
-            $this->flash->success($message);
-        }
-        $this->backToDirectory();
+        in_array(PluginManager::SELF, $updated, true) ? $this->backToInstalled() : $this->backToDirectory();
     }
 
     public function resolve()

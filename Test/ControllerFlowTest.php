@@ -97,11 +97,22 @@ class ControllerFlowTest extends Base
 
         $this->controller($m, ['A' => ['x']])->updateAll();
 
-        $this->assertStringContainsString('Updated 2', $this->flashes['success']);
-        $this->assertStringContainsString('Alpha, Beta', $this->flashes['success']);
-        $this->assertStringContainsString('Gamma', $this->flashes['failure']);
-        $this->assertStringContainsString('checksum mismatch', $this->flashes['failure']);
+        // Core shows only the success flash when both are set, so a partial run is one failure message.
+        $this->assertArrayNotHasKey('success', $this->flashes);
+        $this->assertStringContainsString('Updated 2: Alpha, Beta.', $this->flashes['failure']);
+        $this->assertStringContainsString('Gamma (checksum mismatch)', $this->flashes['failure']);
         $this->assertStringContainsString('directory', end($this->redirects));
+    }
+
+    public function testUpdateAllWithNothingToDoSaysSo()
+    {
+        $m = $this->manager();
+        $m->method('updateAll')->willReturn(['updated' => [], 'failed' => []]);
+        $this->post([]);
+
+        $this->controller($m)->updateAll();
+
+        $this->assertSame('Everything is up to date.', $this->flashes['success']);
     }
 
     public function testUpdateAllRequiresCsrf()
