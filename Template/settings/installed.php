@@ -19,40 +19,25 @@
                 <?= $p['status'] === 'disabled' ? t('Disabled') : t('Active') ?>
             </span>
 
-            <?php if (! empty($p['unmet_deps']) || ! empty($p['active_conflicts'])): ?>
+            <?php
+                $requiresState = $p['requires_state'] ?? [];
+                $unmetRecommends = array_values(array_filter($p['unmet_deps'] ?? [], static fn ($d) => ($d['kind'] ?? '') === 'recommends'));
+            ?>
+            <?php if ($requiresState || $unmetRecommends || ! empty($p['active_conflicts'])): ?>
             <div class="modmenu-card__alerts">
-            <?php if (! empty($p['unmet_deps'])): ?>
+            <?php if ($requiresState || $unmetRecommends): ?>
                 <div class="modmenu-deps">
-                    <?php foreach ($p['unmet_deps'] as $dep): ?>
-                        <?php $hard = $dep['kind'] === 'requires'; ?>
-                        <div class="modmenu-dep <?= $hard ? 'modmenu-callout modmenu-dep--required' : 'modmenu-dep--recommended' ?>">
-                            <?php if ($hard): ?><i class="fa fa-exclamation-triangle" aria-hidden="true"></i><?php endif ?>
+                    <?php foreach ($requiresState as $dep): ?>
+                        <?= $this->render('ModMenu:settings/requirement', ['dep' => $dep, 'actions' => true, 'missing_label' => t('Missing requirement:')]) ?>
+                    <?php endforeach ?>
+                    <?php foreach ($unmetRecommends as $dep): ?>
+                        <div class="modmenu-dep modmenu-dep--recommended">
                             <span class="modmenu-dep__label">
-                                <?php if ($hard): ?>
-                                    <strong class="modmenu-callout__label"><?= t('Missing requirement:') ?></strong> <?= $this->text->e($dep['plugin']) ?>
-                                <?php else: ?>
-                                    <?= t('Works better with %s', $this->text->e($dep['plugin'])) ?>
-                                <?php endif ?>
+                                <?= t('Works better with %s', $this->text->e($dep['plugin'])) ?>
                                 <?php if (! empty($dep['min_version'])): ?> (&ge; <?= $this->text->e($dep['min_version']) ?>)<?php endif ?>
                                 <?php if (! empty($dep['reason'])): ?> — <?= $this->text->e($dep['reason']) ?><?php endif ?>
                             </span>
-                            <?php if ($dep['status'] === 'disabled'): ?>
-                                <form method="post" style="display:inline"
-                                      action="<?= $this->url->href('ModMenuController', 'enable', ['plugin' => 'ModMenu']) ?>">
-                                    <?= $this->form->csrf() ?>
-                                    <input type="hidden" name="name" value="<?= $this->text->e($dep['plugin']) ?>">
-                                    <button type="submit" class="btn btn-blue"><?= t('Enable %s', $this->text->e($dep['plugin'])) ?></button>
-                                </form>
-                            <?php elseif ($dep['status'] === 'missing'): ?>
-                                <form method="post" style="display:inline"
-                                      action="<?= $this->url->href('ModMenuController', 'install', ['plugin' => 'ModMenu']) ?>">
-                                    <?= $this->form->csrf() ?>
-                                    <input type="hidden" name="name" value="<?= $this->text->e($dep['plugin']) ?>">
-                                    <button type="submit" class="btn btn-blue"><?= t('Install %s', $this->text->e($dep['plugin'])) ?></button>
-                                </form>
-                            <?php else: /* outdated */ ?>
-                                <?= $this->url->link(t('Update via Browse'), 'ModMenuController', 'directory', ['plugin' => 'ModMenu'], false, 'btn') ?>
-                            <?php endif ?>
+                            <?= $this->render('ModMenu:settings/requirement_actions', ['dep' => $dep]) ?>
                         </div>
                     <?php endforeach ?>
                 </div>

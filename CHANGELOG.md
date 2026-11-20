@@ -5,6 +5,30 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## 1.5.0 — 2026-11-20
+
+### Added
+
+- **Categories.** Each Browse card shows its category, and a category menu (with counts) narrows the list. Entries without a `category` are filed under **Other**, so other directories keep working.
+- **Search.** Type to drill down: every word must appear in the title, name, description, author or category.
+- **Sort.** Last updated (default, newest first), First submitted (oldest first) or Author (A–Z); entries without the date or author sort last, and ties sort by title, then name. Without JavaScript the list shows in the default order and the toolbar stays hidden.
+- A "Showing N of M" line and a "No plugins match." empty state.
+- Cards show "Updated YYYY-MM-DD" when the directory gives `last_updated`.
+- Directory fields `category`, `added` and `last_updated` (dates must be `YYYY-MM-DD`, else ignored).
+
+### Changed
+
+- **Requirement states.** Every required plugin shows its state on Browse and Installed: a green check when met, an amber "Update needed" warning when installed but older than `min_version`, red when missing or disabled. The Installed tab now lists met requirements too.
+
+---
+
+## 1.4.2 — 2026-11-17
+
+### Fixed
+- Update all no longer compiles staged copies with OPcache, so a batch update can no longer fatal; the updates list is tidier.
+
+---
+
 ## 1.4.1 — 2026-11-17
 
 ### Fixed

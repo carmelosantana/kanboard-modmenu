@@ -134,4 +134,202 @@ class DirectoryClientTest extends Base
         $merged = $this->client->merge($sourcesData, []);
         $this->assertSame(['ShadcnTheme'], $merged[0]['conflicts']);
     }
+
+    public function testAnnotateClassifiesEachRequirementAgainstTheInstalledMap()
+    {
+        $plugins = [[
+            'name' => 'Addon', 'version' => '1.0.0',
+            'requires' => [
+                ['plugin' => 'Met', 'min_version' => '1.0.0'],
+                ['plugin' => 'Old', 'min_version' => '2.0.0'],
+                ['plugin' => 'Gone'],
+                ['plugin' => 'Off', 'min_version' => '1.0.0'],
+                ['plugin' => 'Any'],
+            ],
+        ]];
+        $map = [
+            'Met' => ['version' => '1.2.0', 'status' => 'active'],
+            'Old' => ['version' => '1.5.0', 'status' => 'active'],
+            'Off' => ['version' => '1.0.0', 'status' => 'disabled'],
+            'Any' => ['version' => '0.1.0', 'status' => 'active'],
+        ];
+        $state = $this->client->annotate($plugins, 'https://x.com/plugins.json', $map)[0]['requires_state'];
+
+        $this->assertSame(['Met', 'Old', 'Gone', 'Off', 'Any'], array_column($state, 'plugin'));
+        $this->assertSame(['satisfied', 'outdated', 'missing', 'disabled', 'satisfied'], array_column($state, 'status'));
+        $this->assertSame('1.5.0', $state[1]['installed_version']);
+        $this->assertSame('2.0.0', $state[1]['min_version']);
+        $this->assertNull($state[4]['min_version']);
+    }
+
+    public function testAnnotateGivesAnEmptyRequiresStateWithoutRequires()
+    {
+        $out = $this->client->annotate([['name' => 'Foo', 'version' => '1.0.0', 'requires' => 'oops']], 'https://x.com/plugins.json', []);
+        $this->assertSame([], $out[0]['requires_state']);
+    }
+
+    // ── Browse metadata: category and dates ────────────────────────────────
+
+    public function testAnnotateTrimsCategoryAndFilesMissingOnesUnderOther()
+    {
+        $out = $this->client->annotate([
+            ['name' => 'A', 'version' => '1.0.0', 'category' => '  Fun  '],
+            ['name' => 'B', 'version' => '1.0.0'],
+            ['name' => 'C', 'version' => '1.0.0', 'category' => '   '],
+            ['name' => 'D', 'version' => '1.0.0', 'category' => ['AI']],
+        ], 'https://x.com/plugins.json', []);
+        $this->assertSame(['Fun', 'Other', 'Other', 'Other'], array_column($out, 'category'));
+    }
+
+    public function testAnnotateKeepsOnlyIsoDates()
+    {
+        $out = $this->client->annotate([
+            ['name' => 'A', 'version' => '1.0.0', 'added' => '2026-07-03', 'last_updated' => '2026-11-17'],
+            ['name' => 'B', 'version' => '1.0.0', 'added' => '07/03/2026', 'last_updated' => '2026-11-17T10:00:00Z'],
+            ['name' => 'C', 'version' => '1.0.0'],
+            ['name' => 'D', 'version' => '1.0.0', 'added' => 20260703, 'last_updated' => ['2026-11-17']],
+        ], 'https://x.com/plugins.json', []);
+        $this->assertSame(['2026-07-03', '', '', ''], array_column($out, 'added'));
+        $this->assertSame(['2026-11-17', '', '', ''], array_column($out, 'last_updated'));
+    }
+
+    private function entry(string $name, string $added = '', string $updated = '', string $author = '', ?string $title = null): array
+    {
+        $e = ['name' => $name, 'added' => $added, 'last_updated' => $updated, 'author' => $author];
+        if ($title !== null) {
+            $e['title'] = $title;
+        }
+        return $e;
+    }
+
+    public function testSortByLastUpdatedIsNewestFirstWithTiesByTitleAndUndatedLast()
+    {
+        $plugins = [
+            $this->entry('Undated', '2026-01-01', ''),
+            $this->entry('Old', '2026-01-01', '2026-03-01'),
+            $this->entry('Zeta', '2026-01-01', '2026-11-17'),
+            $this->entry('alpha', '2026-01-01', '2026-11-17'),
+            $this->entry('AlsoUndated', '2026-01-01', '', '', 'Aardvark'),
+        ];
+        $this->assertSame(
+            ['alpha', 'Zeta', 'Old', 'AlsoUndated', 'Undated'],
+            array_column(DirectoryClient::sortPlugins($plugins, 'updated'), 'name')
+        );
+    }
+
+    public function testSortByAddedIsOldestFirstWithUndatedLast()
+    {
+        $plugins = [
+            $this->entry('New', '2026-10-08'),
+            $this->entry('Undated', ''),
+            $this->entry('Beta', '2026-07-03'),
+            $this->entry('Alpha', '2026-07-03'),
+        ];
+        $this->assertSame(
+            ['Alpha', 'Beta', 'New', 'Undated'],
+            array_column(DirectoryClient::sortPlugins($plugins, 'added'), 'name')
+        );
+    }
+
+    public function testSortByAuthorIsCaseInsensitiveWithTiesByTitle()
+    {
+        $plugins = [
+            $this->entry('Z1', '', '', 'zed'),
+            $this->entry('B', '', '', 'Carmelo Santana', 'Beta'),
+            $this->entry('A', '', '', 'carmelo santana', 'Alpha'),
+            $this->entry('M', '', '', 'Mallory'),
+        ];
+        $this->assertSame(
+            ['A', 'B', 'M', 'Z1'],
+            array_column(DirectoryClient::sortPlugins($plugins, 'author'), 'name')
+        );
+    }
+
+    public function testSortTitleFallsBackToNameAndIgnoresCase()
+    {
+        $plugins = [
+            $this->entry('Zed', '', '2026-01-01', '', 'apple'),
+            $this->entry('banana', '', '2026-01-01'),
+            $this->entry('Cherry', '', '2026-01-01'),
+        ];
+        $this->assertSame(
+            ['Zed', 'banana', 'Cherry'],
+            array_column(DirectoryClient::sortPlugins($plugins, 'updated'), 'name')
+        );
+    }
+
+    public function testSortUnknownOrderFallsBackToLastUpdated()
+    {
+        $plugins = [$this->entry('Old', '', '2026-01-01'), $this->entry('New', '', '2026-11-01')];
+        $this->assertSame(
+            array_column(DirectoryClient::sortPlugins($plugins, 'updated'), 'name'),
+            array_column(DirectoryClient::sortPlugins($plugins, 'bogus'), 'name')
+        );
+        $this->assertSame(['New', 'Old'], array_column(DirectoryClient::sortPlugins($plugins, ''), 'name'));
+    }
+
+    public function testSortReturnsAList()
+    {
+        $out = DirectoryClient::sortPlugins(['x' => $this->entry('B', '', '2026-01-01'), 'y' => $this->entry('A', '', '2026-02-01')], 'updated');
+        $this->assertSame([0, 1], array_keys($out));
+    }
+
+    public function testCategoryCountsAreAlphabeticalWithOtherLast()
+    {
+        $plugins = [
+            ['name' => 'a', 'category' => 'Other'],
+            ['name' => 'b', 'category' => 'Fun'],
+            ['name' => 'c', 'category' => 'AI'],
+            ['name' => 'd', 'category' => 'Fun'],
+            ['name' => 'e', 'category' => 'administration'],
+            ['name' => 'f'],
+        ];
+        $this->assertSame(
+            ['administration' => 1, 'AI' => 1, 'Fun' => 2, 'Other' => 2],
+            DirectoryClient::categoryCounts($plugins)
+        );
+    }
+
+    public function testAnnotateCleansThirdPartyRequiresBeforeClassifying()
+    {
+        $plugins = [['name' => 'Foo', 'version' => '1.0.0', 'requires' => [
+            ['plugin' => 'Dep', 'min_version' => ['1.0.0'], 'reason' => ['why']],
+            ['plugin' => ['Arr']],
+        ]]];
+        $out = $this->client->annotate($plugins, 'https://x.com/plugins.json', ['Dep' => ['version' => '0.1.0', 'status' => 'active']]);
+        $this->assertSame([['plugin' => 'Dep', 'min_version' => null, 'reason' => '']], $out[0]['requires']);
+        $this->assertCount(1, $out[0]['requires_state']);
+        $this->assertSame('satisfied', $out[0]['requires_state'][0]['status']);
+    }
+
+    public function testCategoryCountsKeepAZeroCategory()
+    {
+        $counts = DirectoryClient::categoryCounts([['category' => '0'], ['category' => ''], ['category' => 'Fun']]);
+        $this->assertSame(['0', 'Fun', 'Other'], array_map('strval', array_keys($counts)));
+        $this->assertSame([1, 1, 1], array_values($counts));
+    }
+
+    public function testSortByAuthorPutsEntriesWithoutAnAuthorLast()
+    {
+        $plugins = [
+            $this->entry('NoAuthor', '', '', ''),
+            $this->entry('Zed', '', '', 'zed'),
+            $this->entry('AlsoNone', '', '', '', 'Aardvark'),
+            $this->entry('Alice', '', '', 'Alice'),
+        ];
+        $this->assertSame(
+            ['Alice', 'Zed', 'AlsoNone', 'NoAuthor'],
+            array_column(DirectoryClient::sortPlugins($plugins, 'author'), 'name')
+        );
+    }
+
+    public function testEqualTitlesTieBreakOnNameWhateverTheInputOrder()
+    {
+        $a = $this->entry('Beta', '2026-01-01', '2026-01-01', 'X', 'Same');
+        $b = $this->entry('Alpha', '2026-01-01', '2026-01-01', 'X', 'Same');
+        foreach (['updated', 'added', 'author'] as $order) {
+            $this->assertSame(['Alpha', 'Beta'], array_column(DirectoryClient::sortPlugins([$a, $b], $order), 'name'), $order);
+            $this->assertSame(['Alpha', 'Beta'], array_column(DirectoryClient::sortPlugins([$b, $a], $order), 'name'), $order);
+        }
+    }
 }

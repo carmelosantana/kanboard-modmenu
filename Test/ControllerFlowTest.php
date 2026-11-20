@@ -86,6 +86,62 @@ class ControllerFlowTest extends Base
         return $this->createMock(PluginManager::class);
     }
 
+    // ── Installed tab: requirement states ─────────────────────────────────
+
+    public function testInstalledTabShowsAMetRequirementAsAGreenCheck()
+    {
+        $requires = [['plugin' => 'Dep', 'min_version' => '1.0.0']];
+        $m = $this->manager();
+        $m->method('listInstalled')->willReturn([[
+            'name' => 'Needy', 'title' => 'Needy', 'version' => '1.0.0', 'author' => '', 'description' => '',
+            'status' => 'active', 'requires' => $requires, 'recommends' => [],
+        ]]);
+        $map = ['Dep' => ['version' => '1.2.0', 'status' => 'active']];
+        $m->expects($this->once())->method('installedMap')->willReturn($map);
+        $m->expects($this->once())->method('requirementStates')->with($requires, [], $map)->willReturn([[
+            'kind' => 'requires', 'plugin' => 'Dep', 'status' => 'satisfied', 'action' => 'none',
+            'installed_version' => '1.2.0', 'min_version' => '1.0.0', 'reason' => '', 'download' => null,
+        ]]);
+        // Requires are classified once, by requirementStates; unmetDepsFor only supplies recommends.
+        $m->expects($this->once())->method('unmetDepsFor')->with([], [], [], $map)->willReturn([]);
+        $m->method('activeConflicts')->willReturn([]);
+
+        $this->controller($m)->show();
+
+        $this->assertCount(1, $this->bodies);
+        $this->assertStringContainsString('modmenu-dep--met', $this->bodies[0]);
+        $this->assertStringNotContainsString('modmenu-dep--required', $this->bodies[0]);
+    }
+
+    // ── Browse tab: default order and categories ──────────────────────────
+
+    public function testBrowseRendersNewestUpdatedFirstWithCategoryCounts()
+    {
+        $http = $this->getMockBuilder(\Kanboard\Core\Http\Client::class)
+            ->setConstructorArgs([$this->container])->onlyMethods(['getJson'])->getMock();
+        $http->method('getJson')->willReturn([
+            ['name' => 'OldOne', 'title' => 'Old one', 'version' => '1.0.0', 'category' => 'Fun', 'last_updated' => '2026-01-02'],
+            ['name' => 'NoDate', 'title' => 'No date', 'version' => '1.0.0'],
+            ['name' => 'NewOne', 'title' => 'New one', 'version' => '1.0.0', 'category' => 'Fun', 'last_updated' => '2026-11-17'],
+        ]);
+        $this->container['httpClient'] = $http;
+
+        $m = $this->manager();
+        $m->method('activeConflicts')->willReturn([]);
+        $m->method('updatesAvailable')->willReturn([]);
+        $this->controller($m)->directory();
+
+        $this->assertCount(1, $this->bodies);
+        $body = $this->bodies[0];
+        $new = strpos($body, 'data-title="New one"');
+        $old = strpos($body, 'data-title="Old one"');
+        $none = strpos($body, 'data-title="No date"');
+        $this->assertNotFalse($new);
+        $this->assertTrue($new < $old && $old < $none, 'newest update first, undated last');
+        $this->assertMatchesRegularExpression('#<option value="Fun">\s*Fun \(2\)\s*</option>#', $body);
+        $this->assertMatchesRegularExpression('#<option value="Other">\s*Other \(1\)\s*</option>#', $body);
+    }
+
     // ── Update all ─────────────────────────────────────────────────────────
 
     public function testUpdateAllFlashesCountAndFailures()

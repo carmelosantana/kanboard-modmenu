@@ -311,21 +311,24 @@ class PluginManager extends Base
     }
 
     /**
-     * Normalize a raw deps array into clean dep objects. Non-arrays and elements
-     * without a 'plugin' key are dropped (never fatal).
+     * Normalize a raw deps array (plugin.json or a directory entry) into clean dep
+     * objects. Non-arrays, elements without a scalar 'plugin', and non-scalar
+     * min_version/reason values are dropped (never fatal, never "Array to string").
      */
-    private static function normalizeDeps($raw): array
+    public static function normalizeDeps($raw): array
     {
         if (! is_array($raw)) {
             return [];
         }
         $out = [];
         foreach ($raw as $entry) {
-            if (is_array($entry) && ! empty($entry['plugin'])) {
+            if (is_array($entry) && is_scalar($entry['plugin'] ?? null) && (string) $entry['plugin'] !== '') {
+                $min = $entry['min_version'] ?? null;
+                $reason = $entry['reason'] ?? '';
                 $out[] = [
                     'plugin'      => (string) $entry['plugin'],
-                    'min_version' => isset($entry['min_version']) && $entry['min_version'] !== '' ? (string) $entry['min_version'] : null,
-                    'reason'      => isset($entry['reason']) ? (string) $entry['reason'] : '',
+                    'min_version' => is_scalar($min) && (string) $min !== '' ? (string) $min : null,
+                    'reason'      => is_scalar($reason) ? (string) $reason : '',
                 ];
             }
         }
@@ -465,13 +468,26 @@ class PluginManager extends Base
     }
 
     /**
-     * Classified unmet deps (requires + recommends) for one plugin, for display.
-     * Satisfied deps are omitted; each entry carries its 'kind'.
+     * Every declared `requires` entry classified against what is installed,
+     * satisfied ones included (status satisfied|outdated|missing|disabled), for
+     * the Installed tab's per-requirement lines. Pass $installedMap to reuse one
+     * folder scan across many plugins.
      */
-    public function unmetDepsFor(array $requires, array $recommends, array $catalog): array
+    public function requirementStates(array $requires, array $catalog, ?array $installedMap = null): array
+    {
+        return (new DependencyResolver($this->container))
+            ->resolveForward($requires, 'requires', $installedMap ?? $this->installedMap(), $catalog)['deps'];
+    }
+
+    /**
+     * Classified unmet deps (requires + recommends) for one plugin, for display.
+     * Satisfied deps are omitted; each entry carries its 'kind'. Pass
+     * $installedMap to reuse one folder scan.
+     */
+    public function unmetDepsFor(array $requires, array $recommends, array $catalog, ?array $installedMap = null): array
     {
         $resolver = new DependencyResolver($this->container);
-        $map = $this->installedMap();
+        $map = $installedMap ?? $this->installedMap();
         $all = array_merge(
             $resolver->resolveForward($requires, 'requires', $map, $catalog)['deps'],
             $resolver->resolveForward($recommends, 'recommends', $map, $catalog)['deps']

@@ -39,12 +39,16 @@ class ModMenuController extends BaseController
         $this->requireAdmin();
         $manager = $this->manager();
 
-        // Classify each installed plugin's unmet deps against install state only
+        // Classify each installed plugin's deps against install state only
         // (empty catalog → no network on the Installed tab; the Install/Enable
-        // buttons re-resolve server-side). recommends surface as soft hints.
+        // buttons re-resolve server-side). Every requirement shows its state
+        // (met, outdated, missing, disabled); unmet recommends surface as soft hints.
+        // One folder scan for the whole page, shared by every plugin's classification.
         $plugins = $manager->listInstalled();
+        $installedMap = $manager->installedMap();
         foreach ($plugins as &$p) {
-            $p['unmet_deps'] = $manager->unmetDepsFor($p['requires'] ?? [], $p['recommends'] ?? [], []);
+            $p['requires_state'] = $manager->requirementStates($p['requires'] ?? [], [], $installedMap);
+            $p['unmet_deps'] = $manager->unmetDepsFor([], $p['recommends'] ?? [], [], $installedMap);
             $p['active_conflicts'] = $manager->activeConflicts($p['name']);
         }
         unset($p);
@@ -77,10 +81,14 @@ class ModMenuController extends BaseController
         }
         unset($p);
 
+        // The rendered order is the no-JS default; the toolbar JS re-sorts client-side.
+        $plugins = DirectoryClient::sortPlugins($result['plugins'], 'updated');
+
         $this->response->html($this->helper->layout->config('ModMenu:settings/directory', [
             'title' => t('ModMenu'),
             'tab' => 'browse',
-            'plugins' => $result['plugins'],
+            'plugins' => $plugins,
+            'category_counts' => DirectoryClient::categoryCounts($plugins),
             'errors' => $result['errors'],
             'updates' => $manager->updatesAvailable(DirectoryClient::indexByName($result['plugins'])),
             'is_configured' => $manager->isConfigured(),

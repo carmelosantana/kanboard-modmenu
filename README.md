@@ -16,7 +16,7 @@ ModMenu adds a **Settings → ModMenu** page with four tabs:
 | Tab | Purpose |
 |---|---|
 | **Installed** | Lists every plugin currently in `plugins/` (active) or `data/modmenu_disabled/` (disabled), with enable, disable, and remove actions. |
-| **Browse** | Fetches plugin listings from the configured directory sources and shows install/update buttons for each entry, linked screenshot thumbnails, and an **Update all (N)** button when installed plugins have updates. |
+| **Browse** | Fetches plugin listings from the configured directory sources and shows install/update buttons for each entry, linked screenshot thumbnails, and an **Update all (N)** button when installed plugins have updates. A toolbar filters by search and category and sorts the list. |
 | **Upload** | WordPress-style zip upload — drop a `.zip` archive to install a plugin directly. |
 | **Sources** | Manage the directory source URLs that Browse fetches from. Ships with one bundled default source. |
 
@@ -90,6 +90,34 @@ When the directory has newer versions of active plugins, Browse shows **Update a
 with the list of `from → to` versions. It updates each one through the same verified swap
 as a single update and keeps going past a failure; the result lists what was updated and
 what failed. ModMenu itself, if outdated, is updated last.
+
+## Browsing the directory
+
+Browse lists entries newest update first. Above the cards, a toolbar narrows and re-orders
+the list without reloading the page:
+
+- **Search** — type to drill down. Every word you type must appear in the plugin's title,
+  name, description, author or category (case-insensitive).
+- **Category** — one category at a time, each with its count. Entries without a
+  `category` are filed under **Other**.
+- **Sort** — **Last updated** (newest first, the default), **First submitted** (oldest
+  first) or **Author** (A–Z). Entries without the date or author sort last; ties sort by title, then name.
+
+A "Showing N of M" line follows the filter, with "No plugins match." when nothing does.
+Each card shows its category and, when known, the date it was last updated. The toolbar
+needs JavaScript; without it Browse shows the full list in the default order and no
+controls.
+
+### Requirement states
+
+Each `requires` entry shows its state on the Browse and Installed tabs:
+
+| State | Callout |
+|---|---|
+| Installed, active, new enough | Green check — **Requirement met:** `Dep 1.2.0 (≥ 1.0.0)` |
+| Installed but older than `min_version` | Amber warning — **Update needed:** `Dep — 0.9.0 installed, needs ≥ 1.0.0` (Installed offers **Update via Browse**) |
+| Not installed | Red — **Requires:** / **Missing requirement:** (Installed offers **Install**) |
+| Installed but disabled | Red — **Requirement disabled:** (Installed offers **Enable**) |
 
 ## Self-update
 
@@ -203,6 +231,9 @@ Each entry in the JSON array is an object. All fields are optional except `name`
 |---|---|---|
 | `name` | string | **Required.** Must match the plugin folder name exactly (case-sensitive). Used as the unique identifier for status checks. |
 | `title` | string | Human-readable display name shown in the Browse tab. Falls back to `name` if absent. |
+| `category` | string | Browse category (e.g. `"Reporting"`). Any string is shown; a missing or empty one files the entry under `Other`. |
+| `added` | string | `YYYY-MM-DD` the entry first appeared in the directory. Drives the **First submitted** sort. Ignored unless it is `YYYY-MM-DD`. |
+| `last_updated` | string | `YYYY-MM-DD` the listed `version` was published. Drives the default **Last updated** sort and the card's "Updated" date. Ignored unless it is `YYYY-MM-DD`. |
 | `author` | string | Plugin author name. |
 | `description` | string | Short description shown under the title. |
 | `version` | string | Semantic version string (e.g. `"1.2.0"`). Used for update detection: if this is greater than the installed version, an "Update available" badge appears. |
@@ -238,9 +269,12 @@ Example:
   {
     "name": "BulkProjectDelete",
     "title": "Bulk Project Delete",
+    "category": "Administration",
     "author": "Carmelo Santana",
     "description": "Delete multiple projects in one action.",
     "version": "1.0.1",
+    "added": "2026-07-03",
+    "last_updated": "2026-11-17",
     "compatible_version": ">=1.2.47",
     "homepage": "https://github.com/carmelosantana/BulkProjectDelete",
     "download": "https://github.com/carmelosantana/BulkProjectDelete/archive/refs/heads/main.zip",
