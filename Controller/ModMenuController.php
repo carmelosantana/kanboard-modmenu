@@ -39,12 +39,14 @@ class ModMenuController extends BaseController
         $this->requireAdmin();
         $manager = $this->manager();
 
-        // Classify each installed plugin's unmet deps against install state only
+        // Classify each installed plugin's deps against install state only
         // (empty catalog → no network on the Installed tab; the Install/Enable
-        // buttons re-resolve server-side). recommends surface as soft hints.
+        // buttons re-resolve server-side). Every requirement shows its state
+        // (met, outdated, missing, disabled); unmet recommends surface as soft hints.
         $plugins = $manager->listInstalled();
         foreach ($plugins as &$p) {
-            $p['unmet_deps'] = $manager->unmetDepsFor($p['requires'] ?? [], $p['recommends'] ?? [], []);
+            $p['requires_state'] = $manager->requirementStates($p['requires'] ?? [], []);
+            $p['unmet_deps'] = $manager->unmetDepsFor([], $p['recommends'] ?? [], []);
             $p['active_conflicts'] = $manager->activeConflicts($p['name']);
         }
         unset($p);

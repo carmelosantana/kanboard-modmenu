@@ -39,15 +39,11 @@
                 <span class="modmenu-badge modmenu-badge--disabled"><?= t('Disabled') ?></span>
             <?php endif ?>
 
-            <?php if (! empty($p['requires']) || ! empty($p['conflicts'])): ?>
+            <?php if (! empty($p['requires_state']) || ! empty($p['conflicts'])): ?>
             <div class="modmenu-card__alerts">
-            <?php if (! empty($p['requires'])): ?>
-                <div class="modmenu-dep modmenu-callout modmenu-dep--required">
-                    <i class="fa fa-exclamation-triangle" aria-hidden="true"></i>
-                    <span><strong class="modmenu-callout__label"><?= t('Requires:') ?></strong>
-                    <?php foreach ($p['requires'] as $i => $r): ?><?= $i ? ', ' : ' ' ?><?= $this->text->e($r['plugin']) ?><?php if (! empty($r['min_version'])): ?> &ge; <?= $this->text->e($r['min_version']) ?><?php endif ?><?php endforeach ?></span>
-                </div>
-            <?php endif ?>
+            <?php foreach ($p['requires_state'] ?? [] as $dep): ?>
+                <?= $this->render('ModMenu:settings/requirement', ['dep' => $dep, 'actions' => false, 'missing_label' => t('Requires:')]) ?>
+            <?php endforeach ?>
             <?php if (! empty($p['conflicts'])): ?>
                 <div class="modmenu-dep modmenu-callout modmenu-dep--conflict">
                     <i class="fa fa-exclamation-triangle" aria-hidden="true"></i>

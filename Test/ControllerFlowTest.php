@@ -86,6 +86,31 @@ class ControllerFlowTest extends Base
         return $this->createMock(PluginManager::class);
     }
 
+    // ── Installed tab: requirement states ─────────────────────────────────
+
+    public function testInstalledTabShowsAMetRequirementAsAGreenCheck()
+    {
+        $requires = [['plugin' => 'Dep', 'min_version' => '1.0.0']];
+        $m = $this->manager();
+        $m->method('listInstalled')->willReturn([[
+            'name' => 'Needy', 'title' => 'Needy', 'version' => '1.0.0', 'author' => '', 'description' => '',
+            'status' => 'active', 'requires' => $requires, 'recommends' => [],
+        ]]);
+        $m->expects($this->once())->method('requirementStates')->with($requires, [])->willReturn([[
+            'kind' => 'requires', 'plugin' => 'Dep', 'status' => 'satisfied', 'action' => 'none',
+            'installed_version' => '1.2.0', 'min_version' => '1.0.0', 'reason' => '', 'download' => null,
+        ]]);
+        // Requires are classified once, by requirementStates; unmetDepsFor only supplies recommends.
+        $m->expects($this->once())->method('unmetDepsFor')->with([], [], [])->willReturn([]);
+        $m->method('activeConflicts')->willReturn([]);
+
+        $this->controller($m)->show();
+
+        $this->assertCount(1, $this->bodies);
+        $this->assertStringContainsString('modmenu-dep--met', $this->bodies[0]);
+        $this->assertStringNotContainsString('modmenu-dep--required', $this->bodies[0]);
+    }
+
     // ── Update all ─────────────────────────────────────────────────────────
 
     public function testUpdateAllFlashesCountAndFailures()

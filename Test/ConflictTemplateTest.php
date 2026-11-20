@@ -77,7 +77,8 @@ class ConflictTemplateTest extends Base
             'plugins' => [[
                 'name' => 'BattleLobby', 'version' => '1.0.0', 'status' => 'available',
                 'description' => 'DESCRIPTION', 'conflicts' => ['ShadcnTheme'],
-                'requires' => [['plugin' => 'AiConnector', 'min_version' => '1.0.0']],
+                'requires_state' => [['kind' => 'requires', 'plugin' => 'AiConnector', 'status' => 'missing', 'action' => 'none',
+                    'installed_version' => null, 'min_version' => '1.0.0', 'reason' => '', 'download' => null]],
             ]],
         ]);
         $this->assertLessThan(strpos($html, 'DESCRIPTION'), strpos($html, 'Requires:'));

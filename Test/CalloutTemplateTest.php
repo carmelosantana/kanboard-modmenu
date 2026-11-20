@@ -35,11 +35,114 @@ class CalloutTemplateTest extends Base
         return $m[1] ?? '';
     }
 
+    /** A classified requirement as DependencyResolver::classify returns it. */
+    private function dep(string $status, ?string $installed, ?string $min = '1.0.0', string $plugin = 'Dep'): array
+    {
+        return ['kind' => 'requires', 'plugin' => $plugin, 'status' => $status, 'action' => 'none',
+            'installed_version' => $installed, 'min_version' => $min, 'reason' => '', 'download' => null];
+    }
+
+    private function decoded(string $html): string
+    {
+        return html_entity_decode($html, ENT_QUOTES | ENT_HTML5);
+    }
+
+    /** Both tabs, keyed by tab name, rendering one requirement in the given state. */
+    private function bothTabs(array $dep): array
+    {
+        return [
+            'installed' => $this->installed(['name' => 'Needy', 'requires_state' => [$dep]]),
+            'browse'    => $this->browse(['name' => 'Needy', 'requires_state' => [$dep]]),
+        ];
+    }
+
+    public function testMetRequirementIsAGreenCheckNotRed()
+    {
+        foreach ($this->bothTabs($this->dep('satisfied', '1.2.0')) as $tab => $html) {
+            $inner = $this->calloutAround($html, 'modmenu-dep--met');
+            $this->assertStringContainsString('<i class="fa fa-check-circle" aria-hidden="true"></i>', $inner, $tab);
+            $this->assertMatchesRegularExpression('/<strong class="modmenu-callout__label">\s*Requirement met:\s*<\/strong>/', $inner, $tab);
+            $this->assertStringContainsString('Dep 1.2.0 (≥ 1.0.0)', preg_replace('/\s+/', ' ', $this->decoded(strip_tags($inner))), $tab);
+            $this->assertStringNotContainsString('modmenu-dep--required', $html, $tab);
+            $this->assertStringNotContainsString('fa-exclamation-triangle', $html, $tab);
+            $this->assertStringNotContainsString('Install Dep', $html, $tab);
+        }
+    }
+
+    public function testMetRequirementWithoutMinVersionShowsNoBound()
+    {
+        foreach ($this->bothTabs($this->dep('satisfied', '0.1.0', null)) as $tab => $html) {
+            $text = preg_replace('/\s+/', ' ', $this->decoded(strip_tags($this->calloutAround($html, 'modmenu-dep--met'))));
+            $this->assertStringContainsString('Dep 0.1.0', $text, $tab);
+            $this->assertStringNotContainsString('≥', $text, $tab);
+        }
+    }
+
+    public function testOutdatedRequirementIsAnAmberWarning()
+    {
+        foreach ($this->bothTabs($this->dep('outdated', '0.9.0')) as $tab => $html) {
+            $inner = $this->calloutAround($html, 'modmenu-dep--outdated');
+            $this->assertStringContainsString('<i class="fa fa-exclamation-triangle" aria-hidden="true"></i>', $inner, $tab);
+            $this->assertMatchesRegularExpression('/<strong class="modmenu-callout__label">\s*Update needed:\s*<\/strong>/', $inner, $tab);
+            $this->assertStringContainsString('Dep — 0.9.0 installed, needs ≥ 1.0.0', preg_replace('/\s+/', ' ', $this->decoded(strip_tags($inner))), $tab);
+            $this->assertStringNotContainsString('modmenu-dep--required', $html, $tab);
+        }
+    }
+
+    public function testOutdatedRequirementOffersUpdateViaBrowseOnlyOnInstalled()
+    {
+        $tabs = $this->bothTabs($this->dep('outdated', '0.9.0'));
+        $this->assertStringContainsString('Update via Browse', $tabs['installed']);
+        $this->assertStringNotContainsString('Update via Browse', $tabs['browse']);
+    }
+
+    public function testMissingRequirementStaysRedWithInstallOnInstalled()
+    {
+        $tabs = $this->bothTabs($this->dep('missing', null));
+        foreach ($tabs as $tab => $html) {
+            $inner = $this->calloutAround($html, 'modmenu-dep--required');
+            $this->assertStringContainsString('fa-exclamation-triangle', $inner, $tab);
+            $this->assertStringNotContainsString('modmenu-dep--met', $html, $tab);
+        }
+        $this->assertStringContainsString('Install Dep', $tabs['installed']);
+        $this->assertStringNotContainsString('Install Dep', $tabs['browse']);
+    }
+
+    public function testDisabledRequirementStaysRedAndSaysSo()
+    {
+        $tabs = $this->bothTabs($this->dep('disabled', '1.0.0'));
+        foreach ($tabs as $tab => $html) {
+            $inner = $this->calloutAround($html, 'modmenu-dep--required');
+            $this->assertMatchesRegularExpression('/<strong class="modmenu-callout__label">\s*Requirement disabled:\s*<\/strong>/', $inner, $tab);
+            $this->assertStringContainsString('Dep', $inner, $tab);
+        }
+        $this->assertStringContainsString('Enable Dep', $tabs['installed']);
+        $this->assertStringNotContainsString('Enable Dep', $tabs['browse']);
+    }
+
+    public function testEachRequirementGetsItsOwnLine()
+    {
+        $deps = [$this->dep('satisfied', '1.2.0', '1.0.0', 'A'), $this->dep('outdated', '0.1.0', '1.0.0', 'B'), $this->dep('missing', null, null, 'C')];
+        foreach ([
+            'installed' => $this->installed(['name' => 'Needy', 'requires_state' => $deps]),
+            'browse'    => $this->browse(['name' => 'Needy', 'requires_state' => $deps]),
+        ] as $tab => $html) {
+            $this->assertSame(1, substr_count($html, 'modmenu-dep--met'), $tab);
+            $this->assertSame(1, substr_count($html, 'modmenu-dep--outdated'), $tab);
+            $this->assertSame(1, substr_count($html, 'modmenu-dep--required'), $tab);
+        }
+    }
+
+    public function testInstalledRecommendationsStillOnlyShowWhenUnmet()
+    {
+        $html = $this->installed(['name' => 'Needy', 'requires_state' => [], 'unmet_deps' => []]);
+        $this->assertStringNotContainsString('modmenu-dep--recommended', $html);
+        $this->assertStringNotContainsString('modmenu-card__alerts', $html);
+    }
+
     public function testInstalledMissingRequirementIsACallout()
     {
-        $html = $this->installed(['name' => 'Needy', 'unmet_deps' => [
-            ['kind' => 'requires', 'plugin' => 'Dep', 'min_version' => '1.0.0', 'reason' => '', 'status' => 'missing'],
-        ]]);
+        $html = $this->installed(['name' => 'Needy', 'requires_state' => [$this->dep('missing', null)]]);
         $inner = $this->calloutAround($html, 'modmenu-dep--required');
         $this->assertStringContainsString('<i class="fa fa-exclamation-triangle" aria-hidden="true"></i>', $inner);
         $this->assertMatchesRegularExpression('/<strong class="modmenu-callout__label">\s*Missing requirement:\s*<\/strong>/', $inner);
@@ -65,7 +168,7 @@ class CalloutTemplateTest extends Base
 
     public function testBrowseRequiresIsACallout()
     {
-        $html = $this->browse(['name' => 'Addon', 'requires' => [['plugin' => 'Dep', 'min_version' => '1.0.0']]]);
+        $html = $this->browse(['name' => 'Addon', 'requires_state' => [$this->dep('missing', null)]]);
         $inner = $this->calloutAround($html, 'modmenu-dep--required');
         $this->assertStringContainsString('fa-exclamation-triangle', $inner);
         $this->assertMatchesRegularExpression('/<strong class="modmenu-callout__label">\s*Requires:\s*<\/strong>/', $inner);
