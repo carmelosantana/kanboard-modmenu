@@ -14,6 +14,67 @@ use Kanboard\Core\Base;
  */
 class DirectoryClient extends Base
 {
+    /** Category for entries whose source gives none (forks, third-party directories). */
+    public const OTHER_CATEGORY = 'Other';
+
+    /** Browse sort orders; the first is the default. */
+    public const SORT_ORDERS = ['updated', 'added', 'author'];
+
+    /** A YYYY-MM-DD string as given, anything else as ''. */
+    private static function isoDate($value): string
+    {
+        return is_string($value) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $value) ? $value : '';
+    }
+
+    /**
+     * Browse order: 'updated' (last_updated newest first, the default and the
+     * fallback for an unknown order), 'added' (oldest first, "First submitted")
+     * or 'author' (A–Z, case-insensitive). Ties fall back to title A–Z (title,
+     * else name); entries without the date sort last. Assets/js/modmenu.js
+     * mirrors these rules for the client-side re-sort.
+     */
+    public static function sortPlugins(array $plugins, string $order): array
+    {
+        $order = in_array($order, self::SORT_ORDERS, true) ? $order : self::SORT_ORDERS[0];
+        $title = static fn (array $p): string => mb_strtolower((string) ($p['title'] ?? $p['name'] ?? ''));
+
+        usort($plugins, static function (array $a, array $b) use ($order, $title): int {
+            if ($order === 'author') {
+                $cmp = strcmp(mb_strtolower((string) ($a['author'] ?? '')), mb_strtolower((string) ($b['author'] ?? '')));
+            } else {
+                $field = $order === 'added' ? 'added' : 'last_updated';
+                $da = (string) ($a[$field] ?? '');
+                $db = (string) ($b[$field] ?? '');
+                if ($da === '' || $db === '') {
+                    $cmp = ($da === '') <=> ($db === '');
+                } else {
+                    $cmp = $order === 'added' ? strcmp($da, $db) : strcmp($db, $da);
+                }
+            }
+            return $cmp !== 0 ? $cmp : strcmp($title($a), $title($b));
+        });
+
+        return $plugins;
+    }
+
+    /** Entries per category, A–Z (case-insensitive) with Other last. */
+    public static function categoryCounts(array $plugins): array
+    {
+        $counts = [];
+        foreach ($plugins as $plugin) {
+            $category = (string) ($plugin['category'] ?? '') ?: self::OTHER_CATEGORY;
+            $counts[$category] = ($counts[$category] ?? 0) + 1;
+        }
+        uksort($counts, static function ($a, $b): int {
+            $a = (string) $a;
+            $b = (string) $b;
+            $other = ($a === self::OTHER_CATEGORY) <=> ($b === self::OTHER_CATEGORY);
+            return $other !== 0 ? $other : strcmp(mb_strtolower($a), mb_strtolower($b));
+        });
+
+        return $counts;
+    }
+
     public static function resolveAssetUrl(string $path, string $baseUrl): string
     {
         if (preg_match('#^https?://#i', $path)) {
@@ -42,6 +103,12 @@ class DirectoryClient extends Base
                 $plugin['installed_version'] = $installed['version'];
             } else {
                 $plugin['status'] = 'available';
+            }
+
+            $category = is_string($plugin['category'] ?? null) ? trim($plugin['category']) : '';
+            $plugin['category'] = $category === '' ? self::OTHER_CATEGORY : $category;
+            foreach (['added', 'last_updated'] as $field) {
+                $plugin[$field] = self::isoDate($plugin[$field] ?? null);
             }
 
             $plugin['conflicts'] = PluginManager::normalizeConflicts($plugin['conflicts'] ?? []);
