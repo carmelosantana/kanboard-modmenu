@@ -341,6 +341,15 @@ class PluginManagerTest extends Base
         $this->assertSame(['requires'], array_values(array_unique(array_column($states, 'kind'))));
     }
 
+    public function testRequirementStatesAndUnmetDepsUseAGivenInstalledMapInsteadOfScanning()
+    {
+        // Nothing on disk: the passed map is the only source of install state.
+        $map = ['Ghost' => ['version' => '1.0.0', 'status' => 'active']];
+        $states = $this->manager->requirementStates([['plugin' => 'Ghost', 'min_version' => '1.0.0']], [], $map);
+        $this->assertSame('satisfied', $states[0]['status']);
+        $this->assertSame([], $this->manager->unmetDepsFor([['plugin' => 'Ghost']], [['plugin' => 'Ghost']], [], $map));
+    }
+
     public function testNormalizeDepsDropsNonScalarFields()
     {
         $this->assertSame(

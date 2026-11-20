@@ -470,22 +470,24 @@ class PluginManager extends Base
     /**
      * Every declared `requires` entry classified against what is installed,
      * satisfied ones included (status satisfied|outdated|missing|disabled), for
-     * the Installed tab's per-requirement lines.
+     * the Installed tab's per-requirement lines. Pass $installedMap to reuse one
+     * folder scan across many plugins.
      */
-    public function requirementStates(array $requires, array $catalog): array
+    public function requirementStates(array $requires, array $catalog, ?array $installedMap = null): array
     {
         return (new DependencyResolver($this->container))
-            ->resolveForward($requires, 'requires', $this->installedMap(), $catalog)['deps'];
+            ->resolveForward($requires, 'requires', $installedMap ?? $this->installedMap(), $catalog)['deps'];
     }
 
     /**
      * Classified unmet deps (requires + recommends) for one plugin, for display.
-     * Satisfied deps are omitted; each entry carries its 'kind'.
+     * Satisfied deps are omitted; each entry carries its 'kind'. Pass
+     * $installedMap to reuse one folder scan.
      */
-    public function unmetDepsFor(array $requires, array $recommends, array $catalog): array
+    public function unmetDepsFor(array $requires, array $recommends, array $catalog, ?array $installedMap = null): array
     {
         $resolver = new DependencyResolver($this->container);
-        $map = $this->installedMap();
+        $map = $installedMap ?? $this->installedMap();
         $all = array_merge(
             $resolver->resolveForward($requires, 'requires', $map, $catalog)['deps'],
             $resolver->resolveForward($recommends, 'recommends', $map, $catalog)['deps']

@@ -96,12 +96,14 @@ class ControllerFlowTest extends Base
             'name' => 'Needy', 'title' => 'Needy', 'version' => '1.0.0', 'author' => '', 'description' => '',
             'status' => 'active', 'requires' => $requires, 'recommends' => [],
         ]]);
-        $m->expects($this->once())->method('requirementStates')->with($requires, [])->willReturn([[
+        $map = ['Dep' => ['version' => '1.2.0', 'status' => 'active']];
+        $m->expects($this->once())->method('installedMap')->willReturn($map);
+        $m->expects($this->once())->method('requirementStates')->with($requires, [], $map)->willReturn([[
             'kind' => 'requires', 'plugin' => 'Dep', 'status' => 'satisfied', 'action' => 'none',
             'installed_version' => '1.2.0', 'min_version' => '1.0.0', 'reason' => '', 'download' => null,
         ]]);
         // Requires are classified once, by requirementStates; unmetDepsFor only supplies recommends.
-        $m->expects($this->once())->method('unmetDepsFor')->with([], [], [])->willReturn([]);
+        $m->expects($this->once())->method('unmetDepsFor')->with([], [], [], $map)->willReturn([]);
         $m->method('activeConflicts')->willReturn([]);
 
         $this->controller($m)->show();

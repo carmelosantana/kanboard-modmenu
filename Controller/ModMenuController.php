@@ -43,10 +43,12 @@ class ModMenuController extends BaseController
         // (empty catalog → no network on the Installed tab; the Install/Enable
         // buttons re-resolve server-side). Every requirement shows its state
         // (met, outdated, missing, disabled); unmet recommends surface as soft hints.
+        // One folder scan for the whole page, shared by every plugin's classification.
         $plugins = $manager->listInstalled();
+        $installedMap = $manager->installedMap();
         foreach ($plugins as &$p) {
-            $p['requires_state'] = $manager->requirementStates($p['requires'] ?? [], []);
-            $p['unmet_deps'] = $manager->unmetDepsFor([], $p['recommends'] ?? [], []);
+            $p['requires_state'] = $manager->requirementStates($p['requires'] ?? [], [], $installedMap);
+            $p['unmet_deps'] = $manager->unmetDepsFor([], $p['recommends'] ?? [], [], $installedMap);
             $p['active_conflicts'] = $manager->activeConflicts($p['name']);
         }
         unset($p);
