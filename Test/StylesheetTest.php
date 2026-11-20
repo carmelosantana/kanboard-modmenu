@@ -99,6 +99,15 @@ class StylesheetTest extends TestCase
         $this->fail('no .modmenu-shot rule');
     }
 
+    // Long callout text grows beside its icon instead of wrapping onto its own row and stranding the icon.
+    public function testCalloutTextGrowsBesideItsIcon()
+    {
+        $span = $this->rule('.modmenu-callout > span');
+        $this->assertMatchesRegularExpression('/flex\s*:\s*1 1 \d/', $span);
+        $this->assertMatchesRegularExpression('/min-width\s*:\s*0/', $span);
+        $this->assertMatchesRegularExpression('/align-items\s*:\s*flex-start/', $this->rule('.modmenu-callout'));
+    }
+
     /** Body of the first rule whose selector is exactly $selector, outside any media query. */
     private function rule(string $selector): string
     {
