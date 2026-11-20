@@ -111,6 +111,35 @@ class ControllerFlowTest extends Base
         $this->assertStringNotContainsString('modmenu-dep--required', $this->bodies[0]);
     }
 
+    // ── Browse tab: default order and categories ──────────────────────────
+
+    public function testBrowseRendersNewestUpdatedFirstWithCategoryCounts()
+    {
+        $http = $this->getMockBuilder(\Kanboard\Core\Http\Client::class)
+            ->setConstructorArgs([$this->container])->onlyMethods(['getJson'])->getMock();
+        $http->method('getJson')->willReturn([
+            ['name' => 'OldOne', 'title' => 'Old one', 'version' => '1.0.0', 'category' => 'Fun', 'last_updated' => '2026-01-02'],
+            ['name' => 'NoDate', 'title' => 'No date', 'version' => '1.0.0'],
+            ['name' => 'NewOne', 'title' => 'New one', 'version' => '1.0.0', 'category' => 'Fun', 'last_updated' => '2026-11-17'],
+        ]);
+        $this->container['httpClient'] = $http;
+
+        $m = $this->manager();
+        $m->method('activeConflicts')->willReturn([]);
+        $m->method('updatesAvailable')->willReturn([]);
+        $this->controller($m)->directory();
+
+        $this->assertCount(1, $this->bodies);
+        $body = $this->bodies[0];
+        $new = strpos($body, 'data-title="New one"');
+        $old = strpos($body, 'data-title="Old one"');
+        $none = strpos($body, 'data-title="No date"');
+        $this->assertNotFalse($new);
+        $this->assertTrue($new < $old && $old < $none, 'newest update first, undated last');
+        $this->assertMatchesRegularExpression('#<option value="Fun">\s*Fun \(2\)\s*</option>#', $body);
+        $this->assertMatchesRegularExpression('#<option value="Other">\s*Other \(1\)\s*</option>#', $body);
+    }
+
     // ── Update all ─────────────────────────────────────────────────────────
 
     public function testUpdateAllFlashesCountAndFailures()

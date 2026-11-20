@@ -79,10 +79,14 @@ class ModMenuController extends BaseController
         }
         unset($p);
 
+        // The rendered order is the no-JS default; the toolbar JS re-sorts client-side.
+        $plugins = DirectoryClient::sortPlugins($result['plugins'], 'updated');
+
         $this->response->html($this->helper->layout->config('ModMenu:settings/directory', [
             'title' => t('ModMenu'),
             'tab' => 'browse',
-            'plugins' => $result['plugins'],
+            'plugins' => $plugins,
+            'category_counts' => DirectoryClient::categoryCounts($plugins),
             'errors' => $result['errors'],
             'updates' => $manager->updatesAvailable(DirectoryClient::indexByName($result['plugins'])),
             'is_configured' => $manager->isConfigured(),
