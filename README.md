@@ -101,7 +101,7 @@ the list without reloading the page:
 - **Category** — one category at a time, each with its count. Entries without a
   `category` are filed under **Other**.
 - **Sort** — **Last updated** (newest first, the default), **First submitted** (oldest
-  first) or **Author** (A–Z). Ties sort by title; entries without the date sort last.
+  first) or **Author** (A–Z). Entries without the date or author sort last; ties sort by title, then name.
 
 A "Showing N of M" line follows the filter, with "No plugins match." when nothing does.
 Each card shows its category and, when known, the date it was last updated. The toolbar

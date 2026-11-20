@@ -301,4 +301,35 @@ class DirectoryClientTest extends Base
         $this->assertCount(1, $out[0]['requires_state']);
         $this->assertSame('satisfied', $out[0]['requires_state'][0]['status']);
     }
+
+    public function testCategoryCountsKeepAZeroCategory()
+    {
+        $counts = DirectoryClient::categoryCounts([['category' => '0'], ['category' => ''], ['category' => 'Fun']]);
+        $this->assertSame(['0', 'Fun', 'Other'], array_map('strval', array_keys($counts)));
+        $this->assertSame([1, 1, 1], array_values($counts));
+    }
+
+    public function testSortByAuthorPutsEntriesWithoutAnAuthorLast()
+    {
+        $plugins = [
+            $this->entry('NoAuthor', '', '', ''),
+            $this->entry('Zed', '', '', 'zed'),
+            $this->entry('AlsoNone', '', '', '', 'Aardvark'),
+            $this->entry('Alice', '', '', 'Alice'),
+        ];
+        $this->assertSame(
+            ['Alice', 'Zed', 'AlsoNone', 'NoAuthor'],
+            array_column(DirectoryClient::sortPlugins($plugins, 'author'), 'name')
+        );
+    }
+
+    public function testEqualTitlesTieBreakOnNameWhateverTheInputOrder()
+    {
+        $a = $this->entry('Beta', '2026-01-01', '2026-01-01', 'X', 'Same');
+        $b = $this->entry('Alpha', '2026-01-01', '2026-01-01', 'X', 'Same');
+        foreach (['updated', 'added', 'author'] as $order) {
+            $this->assertSame(['Alpha', 'Beta'], array_column(DirectoryClient::sortPlugins([$a, $b], $order), 'name'), $order);
+            $this->assertSame(['Alpha', 'Beta'], array_column(DirectoryClient::sortPlugins([$b, $a], $order), 'name'), $order);
+        }
+    }
 }

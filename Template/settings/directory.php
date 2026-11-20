@@ -63,10 +63,10 @@
                 $cardTitle, $p['name'] ?? '', $p['description'] ?? '', $p['author'] ?? '', $p['category'] ?? '',
             ]), 'strlen')));
         ?>
-        <div class="modmenu-card" data-title="<?= $this->text->e($cardTitle) ?>" data-search="<?= $this->text->e($cardSearch) ?>" data-category="<?= $this->text->e((string) ($p['category'] ?? '')) ?>" data-author="<?= $this->text->e((string) ($p['author'] ?? '')) ?>" data-added="<?= $this->text->e((string) ($p['added'] ?? '')) ?>" data-updated="<?= $this->text->e((string) ($p['last_updated'] ?? '')) ?>">
+        <div class="modmenu-card" data-title="<?= $this->text->e($cardTitle) ?>" data-name="<?= $this->text->e((string) ($p['name'] ?? '')) ?>" data-search="<?= $this->text->e($cardSearch) ?>" data-category="<?= $this->text->e((string) ($p['category'] ?? '')) ?>" data-author="<?= $this->text->e((string) ($p['author'] ?? '')) ?>" data-added="<?= $this->text->e((string) ($p['added'] ?? '')) ?>" data-updated="<?= $this->text->e((string) ($p['last_updated'] ?? '')) ?>">
             <strong><?= $this->text->e($cardTitle) ?></strong>
-            <?php if (! empty($p['category'])): ?>
-                <span class="modmenu-category"><?= $this->text->e($p['category']) ?></span>
+            <?php if (($p['category'] ?? '') !== ''): ?>
+                <span class="modmenu-category"><?= $this->text->e((string) $p['category']) ?></span>
             <?php endif ?>
             <?php if ($p['status'] === 'update'): ?>
                 <span class="modmenu-badge modmenu-badge--update"><?= t('Update to %s', $this->text->e($p['version'])) ?></span>

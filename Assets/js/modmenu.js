@@ -16,21 +16,24 @@
     function cmp(a, b) { return a < b ? -1 : (a > b ? 1 : 0); }
 
     function compare(order) {
+        var field = order === 'added' ? 'added' : (order === 'author' ? 'author' : 'updated');
+        function key(card) {
+            var v = card.dataset[field] || '';
+            return order === 'author' ? v.toLowerCase() : v;
+        }
         return function (a, b) {
+            var ka = key(a);
+            var kb = key(b);
             var c;
-            if (order === 'author') {
-                c = cmp((a.dataset.author || '').toLowerCase(), (b.dataset.author || '').toLowerCase());
+            if (ka === '' || kb === '') {
+                c = (ka === '' ? 1 : 0) - (kb === '' ? 1 : 0);
             } else {
-                var key = order === 'added' ? 'added' : 'updated';
-                var da = a.dataset[key] || '';
-                var db = b.dataset[key] || '';
-                if (da === '' || db === '') {
-                    c = (da === '' ? 1 : 0) - (db === '' ? 1 : 0);
-                } else {
-                    c = order === 'added' ? cmp(da, db) : cmp(db, da);
-                }
+                c = order === 'updated' ? cmp(kb, ka) : cmp(ka, kb);
             }
-            return c !== 0 ? c : cmp((a.dataset.title || '').toLowerCase(), (b.dataset.title || '').toLowerCase());
+            if (c === 0) {
+                c = cmp((a.dataset.title || '').toLowerCase(), (b.dataset.title || '').toLowerCase());
+            }
+            return c !== 0 ? c : cmp(a.dataset.name || '', b.dataset.name || '');
         };
     }
 

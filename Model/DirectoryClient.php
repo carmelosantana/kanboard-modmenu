@@ -29,29 +29,32 @@ class DirectoryClient extends Base
     /**
      * Browse order: 'updated' (last_updated newest first, the default and the
      * fallback for an unknown order), 'added' (oldest first, "First submitted")
-     * or 'author' (A–Z, case-insensitive). Ties fall back to title A–Z (title,
-     * else name); entries without the date sort last. Assets/js/modmenu.js
-     * mirrors these rules for the client-side re-sort.
+     * or 'author' (A–Z, case-insensitive). Entries without the key (date or
+     * author) sort last. Ties fall back to title A–Z (title, else name), then
+     * to name, so equal titles always land in the same order.
+     * Assets/js/modmenu.js mirrors these rules for the client-side re-sort.
      */
     public static function sortPlugins(array $plugins, string $order): array
     {
         $order = in_array($order, self::SORT_ORDERS, true) ? $order : self::SORT_ORDERS[0];
+        $field = ['updated' => 'last_updated', 'added' => 'added', 'author' => 'author'][$order];
+        $key = static fn (array $p): string => $order === 'author'
+            ? mb_strtolower((string) ($p['author'] ?? ''))
+            : (string) ($p[$field] ?? '');
         $title = static fn (array $p): string => mb_strtolower((string) ($p['title'] ?? $p['name'] ?? ''));
 
-        usort($plugins, static function (array $a, array $b) use ($order, $title): int {
-            if ($order === 'author') {
-                $cmp = strcmp(mb_strtolower((string) ($a['author'] ?? '')), mb_strtolower((string) ($b['author'] ?? '')));
+        usort($plugins, static function (array $a, array $b) use ($order, $key, $title): int {
+            $ka = $key($a);
+            $kb = $key($b);
+            if ($ka === '' || $kb === '') {
+                $cmp = ($ka === '') <=> ($kb === '');
             } else {
-                $field = $order === 'added' ? 'added' : 'last_updated';
-                $da = (string) ($a[$field] ?? '');
-                $db = (string) ($b[$field] ?? '');
-                if ($da === '' || $db === '') {
-                    $cmp = ($da === '') <=> ($db === '');
-                } else {
-                    $cmp = $order === 'added' ? strcmp($da, $db) : strcmp($db, $da);
-                }
+                $cmp = $order === 'updated' ? strcmp($kb, $ka) : strcmp($ka, $kb);
             }
-            return $cmp !== 0 ? $cmp : strcmp($title($a), $title($b));
+            if ($cmp === 0) {
+                $cmp = strcmp($title($a), $title($b));
+            }
+            return $cmp !== 0 ? $cmp : strcmp((string) ($a['name'] ?? ''), (string) ($b['name'] ?? ''));
         });
 
         return $plugins;
@@ -62,7 +65,8 @@ class DirectoryClient extends Base
     {
         $counts = [];
         foreach ($plugins as $plugin) {
-            $category = (string) ($plugin['category'] ?? '') ?: self::OTHER_CATEGORY;
+            $c = (string) ($plugin['category'] ?? '');
+            $category = $c === '' ? self::OTHER_CATEGORY : $c;
             $counts[$category] = ($counts[$category] ?? 0) + 1;
         }
         uksort($counts, static function ($a, $b): int {

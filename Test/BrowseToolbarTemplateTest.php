@@ -101,11 +101,11 @@ class BrowseToolbarTemplateTest extends Base
     {
         $html = $this->sample();
         $this->assertMatchesRegularExpression(
-            '#<div class="modmenu-card" data-title="Pulse" data-search="pulse pulse activity heatmap carmelo santana reporting" data-category="Reporting" data-author="Carmelo Santana" data-added="2026-11-18" data-updated="2026-11-19">#',
+            '#<div class="modmenu-card" data-title="Pulse" data-name="Pulse" data-search="pulse pulse activity heatmap carmelo santana reporting" data-category="Reporting" data-author="Carmelo Santana" data-added="2026-11-18" data-updated="2026-11-19">#',
             $html
         );
         // Title falls back to name; missing fields render empty.
-        $this->assertStringContainsString('data-title="Fun2" data-search="fun2 fun2 fun" data-category="Fun" data-author="" data-added="" data-updated=""', $html);
+        $this->assertStringContainsString('data-title="Fun2" data-name="Fun2" data-search="fun2 fun2 fun" data-category="Fun" data-author="" data-added="" data-updated=""', $html);
     }
 
     public function testDataAttributesAreEscaped()
@@ -146,5 +146,17 @@ class BrowseToolbarTemplateTest extends Base
         $html = $this->sample();
         $this->assertStringNotContainsString('<script', $html);
         $this->assertDoesNotMatchRegularExpression('/\son[a-z]+=/', $html);
+    }
+
+    public function testZeroCategoryShowsAsABadgeAndAnOption()
+    {
+        $html = $this->browse([['name' => 'Z', 'category' => '0']], ['0' => 1]);
+        $this->assertMatchesRegularExpression('#<span class="modmenu-category">\s*0\s*</span>#', $html);
+        $this->assertMatchesRegularExpression('#<option value="0">\s*0 \(1\)\s*</option>#', $html);
+    }
+
+    public function testCardsCarryTheirNameForTieBreaks()
+    {
+        $this->assertStringContainsString('data-title="Fun2" data-name="Fun2"', $this->sample());
     }
 }
