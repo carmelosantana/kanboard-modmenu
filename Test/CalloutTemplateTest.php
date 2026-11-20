@@ -120,6 +120,28 @@ class CalloutTemplateTest extends Base
         $this->assertStringNotContainsString('Enable Dep', $tabs['browse']);
     }
 
+    public function testDisabledAndTooOldRequirementOffersUpdateNotEnable()
+    {
+        // Installed classifies with an empty catalog (action unresolvable); Browse-side resolution says update.
+        foreach (['unresolvable', 'update'] as $action) {
+            $dep = ['action' => $action] + $this->dep('disabled', '0.9.0');
+            $tabs = $this->bothTabs($dep);
+            foreach ($tabs as $tab => $html) {
+                $text = preg_replace('/\s+/', ' ', $this->decoded(strip_tags($this->calloutAround($html, 'modmenu-dep--required'))));
+                $this->assertStringContainsString('Requirement disabled: Dep (0.9.0 installed, needs ≥ 1.0.0)', $text, "$tab/$action");
+            }
+            $this->assertStringContainsString('Update via Browse', $tabs['installed'], $action);
+            $this->assertStringNotContainsString('Enable Dep', $tabs['installed'], $action);
+        }
+    }
+
+    public function testOutdatedLineEscapesVersions()
+    {
+        $html = $this->installed(['name' => 'Needy', 'requires_state' => [$this->dep('outdated', '0.9<b>', '1.0&x')]]);
+        $this->assertStringContainsString('0.9&lt;b&gt; installed, needs ≥ 1.0&amp;x', $html);
+        $this->assertStringNotContainsString('<b>', $html);
+    }
+
     public function testEachRequirementGetsItsOwnLine()
     {
         $deps = [$this->dep('satisfied', '1.2.0', '1.0.0', 'A'), $this->dep('outdated', '0.1.0', '1.0.0', 'B'), $this->dep('missing', null, null, 'C')];
