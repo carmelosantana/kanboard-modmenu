@@ -311,21 +311,24 @@ class PluginManager extends Base
     }
 
     /**
-     * Normalize a raw deps array into clean dep objects. Non-arrays and elements
-     * without a 'plugin' key are dropped (never fatal).
+     * Normalize a raw deps array (plugin.json or a directory entry) into clean dep
+     * objects. Non-arrays, elements without a scalar 'plugin', and non-scalar
+     * min_version/reason values are dropped (never fatal, never "Array to string").
      */
-    private static function normalizeDeps($raw): array
+    public static function normalizeDeps($raw): array
     {
         if (! is_array($raw)) {
             return [];
         }
         $out = [];
         foreach ($raw as $entry) {
-            if (is_array($entry) && ! empty($entry['plugin'])) {
+            if (is_array($entry) && is_scalar($entry['plugin'] ?? null) && (string) $entry['plugin'] !== '') {
+                $min = $entry['min_version'] ?? null;
+                $reason = $entry['reason'] ?? '';
                 $out[] = [
                     'plugin'      => (string) $entry['plugin'],
-                    'min_version' => isset($entry['min_version']) && $entry['min_version'] !== '' ? (string) $entry['min_version'] : null,
-                    'reason'      => isset($entry['reason']) ? (string) $entry['reason'] : '',
+                    'min_version' => is_scalar($min) && (string) $min !== '' ? (string) $min : null,
+                    'reason'      => is_scalar($reason) ? (string) $reason : '',
                 ];
             }
         }

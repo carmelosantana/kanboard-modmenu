@@ -289,4 +289,16 @@ class DirectoryClientTest extends Base
             DirectoryClient::categoryCounts($plugins)
         );
     }
+
+    public function testAnnotateCleansThirdPartyRequiresBeforeClassifying()
+    {
+        $plugins = [['name' => 'Foo', 'version' => '1.0.0', 'requires' => [
+            ['plugin' => 'Dep', 'min_version' => ['1.0.0'], 'reason' => ['why']],
+            ['plugin' => ['Arr']],
+        ]]];
+        $out = $this->client->annotate($plugins, 'https://x.com/plugins.json', ['Dep' => ['version' => '0.1.0', 'status' => 'active']]);
+        $this->assertSame([['plugin' => 'Dep', 'min_version' => null, 'reason' => '']], $out[0]['requires']);
+        $this->assertCount(1, $out[0]['requires_state']);
+        $this->assertSame('satisfied', $out[0]['requires_state'][0]['status']);
+    }
 }

@@ -341,6 +341,18 @@ class PluginManagerTest extends Base
         $this->assertSame(['requires'], array_values(array_unique(array_column($states, 'kind'))));
     }
 
+    public function testNormalizeDepsDropsNonScalarFields()
+    {
+        $this->assertSame(
+            [['plugin' => 'Dep', 'min_version' => null, 'reason' => '']],
+            PluginManager::normalizeDeps([
+                ['plugin' => 'Dep', 'min_version' => ['1.0.0'], 'reason' => ['x']],
+                ['plugin' => ['Arr']],
+                'junk',
+            ])
+        );
+    }
+
     public function testRequirementStatesIsEmptyWithoutRequires()
     {
         $this->assertSame([], $this->manager->requirementStates([], []));

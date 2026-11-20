@@ -112,9 +112,8 @@ class DirectoryClient extends Base
             }
 
             $plugin['conflicts'] = PluginManager::normalizeConflicts($plugin['conflicts'] ?? []);
-            $plugin['requires_state'] = $resolver->resolveForward(
-                is_array($plugin['requires'] ?? null) ? $plugin['requires'] : [], 'requires', $installedMap, []
-            )['deps'];
+            $plugin['requires'] = PluginManager::normalizeDeps($plugin['requires'] ?? []);
+            $plugin['requires_state'] = $resolver->resolveForward($plugin['requires'], 'requires', $installedMap, [])['deps'];
 
             if (! empty($plugin['screenshots']) && is_array($plugin['screenshots'])) {
                 $plugin['screenshots'] = array_map(
