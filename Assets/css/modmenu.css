@@ -33,5 +33,9 @@
 .modmenu-dep--required > .fa { color: #dc2626; }
 .modmenu-dep--conflict { background: rgba(217, 119, 6, 0.10); border: 1px solid rgba(217, 119, 6, 0.35); border-left: 3px solid #d97706; color: inherit; }
 .modmenu-dep--conflict > .fa { color: #d97706; }
+.modmenu-dep--outdated { background: rgba(217, 119, 6, 0.10); border: 1px solid rgba(217, 119, 6, 0.35); border-left: 3px solid #d97706; color: inherit; }
+.modmenu-dep--outdated > .fa { color: #d97706; }
+.modmenu-dep--met { background: rgba(22, 163, 74, 0.10); border: 1px solid rgba(22, 163, 74, 0.35); border-left: 3px solid #16a34a; color: inherit; }
+.modmenu-dep--met > .fa { color: #16a34a; }
 .modmenu-dep--recommended { color: color-mix(in srgb, currentColor 72%, transparent); }
 .modmenu-plan { margin: 8px 0 16px 18px; }
