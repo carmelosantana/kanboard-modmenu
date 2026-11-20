@@ -134,4 +134,37 @@ class DirectoryClientTest extends Base
         $merged = $this->client->merge($sourcesData, []);
         $this->assertSame(['ShadcnTheme'], $merged[0]['conflicts']);
     }
+
+    public function testAnnotateClassifiesEachRequirementAgainstTheInstalledMap()
+    {
+        $plugins = [[
+            'name' => 'Addon', 'version' => '1.0.0',
+            'requires' => [
+                ['plugin' => 'Met', 'min_version' => '1.0.0'],
+                ['plugin' => 'Old', 'min_version' => '2.0.0'],
+                ['plugin' => 'Gone'],
+                ['plugin' => 'Off', 'min_version' => '1.0.0'],
+                ['plugin' => 'Any'],
+            ],
+        ]];
+        $map = [
+            'Met' => ['version' => '1.2.0', 'status' => 'active'],
+            'Old' => ['version' => '1.5.0', 'status' => 'active'],
+            'Off' => ['version' => '1.0.0', 'status' => 'disabled'],
+            'Any' => ['version' => '0.1.0', 'status' => 'active'],
+        ];
+        $state = $this->client->annotate($plugins, 'https://x.com/plugins.json', $map)[0]['requires_state'];
+
+        $this->assertSame(['Met', 'Old', 'Gone', 'Off', 'Any'], array_column($state, 'plugin'));
+        $this->assertSame(['satisfied', 'outdated', 'missing', 'disabled', 'satisfied'], array_column($state, 'status'));
+        $this->assertSame('1.5.0', $state[1]['installed_version']);
+        $this->assertSame('2.0.0', $state[1]['min_version']);
+        $this->assertNull($state[4]['min_version']);
+    }
+
+    public function testAnnotateGivesAnEmptyRequiresStateWithoutRequires()
+    {
+        $out = $this->client->annotate([['name' => 'Foo', 'version' => '1.0.0', 'requires' => 'oops']], 'https://x.com/plugins.json', []);
+        $this->assertSame([], $out[0]['requires_state']);
+    }
 }

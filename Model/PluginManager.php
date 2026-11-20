@@ -465,6 +465,17 @@ class PluginManager extends Base
     }
 
     /**
+     * Every declared `requires` entry classified against what is installed,
+     * satisfied ones included (status satisfied|outdated|missing|disabled), for
+     * the Installed tab's per-requirement lines.
+     */
+    public function requirementStates(array $requires, array $catalog): array
+    {
+        return (new DependencyResolver($this->container))
+            ->resolveForward($requires, 'requires', $this->installedMap(), $catalog)['deps'];
+    }
+
+    /**
      * Classified unmet deps (requires + recommends) for one plugin, for display.
      * Satisfied deps are omitted; each entry carries its 'kind'.
      */

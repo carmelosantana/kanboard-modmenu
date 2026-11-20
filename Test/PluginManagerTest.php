@@ -316,6 +316,36 @@ class PluginManagerTest extends Base
         $this->assertSame('recommends', $unmet[0]['kind']);
     }
 
+    public function testRequirementStatesClassifiesEveryRequireIncludingSatisfied()
+    {
+        $this->seedPlugin($this->active, 'Met', '1.2.0');
+        $this->seedPlugin($this->active, 'Old', '0.9.0');
+        $this->seedPlugin($this->disabled, 'Off', '1.0.0');
+        $this->seedPlugin($this->active, 'Any', '0.1.0');
+
+        $states = $this->manager->requirementStates([
+            ['plugin' => 'Met', 'min_version' => '1.0.0'],
+            ['plugin' => 'Old', 'min_version' => '1.0.0'],
+            ['plugin' => 'Gone', 'min_version' => '1.0.0'],
+            ['plugin' => 'Off'],
+            ['plugin' => 'Any'],
+        ], []);
+
+        $this->assertSame(['Met', 'Old', 'Gone', 'Off', 'Any'], array_column($states, 'plugin'));
+        $this->assertSame(['satisfied', 'outdated', 'missing', 'disabled', 'satisfied'], array_column($states, 'status'));
+        $this->assertSame('1.2.0', $states[0]['installed_version']);
+        $this->assertSame('1.0.0', $states[0]['min_version']);
+        $this->assertSame('0.9.0', $states[1]['installed_version']);
+        $this->assertNull($states[2]['installed_version']);
+        $this->assertNull($states[4]['min_version'], 'no min_version stays null');
+        $this->assertSame(['requires'], array_values(array_unique(array_column($states, 'kind'))));
+    }
+
+    public function testRequirementStatesIsEmptyWithoutRequires()
+    {
+        $this->assertSame([], $this->manager->requirementStates([], []));
+    }
+
     public function testDisableBlockedByActiveDependent()
     {
         $this->seedPlugin($this->active, 'Cal', '1.1.0');

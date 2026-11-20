@@ -6,7 +6,8 @@ use Kanboard\Core\Base;
 
 /**
  * Fetches plugin listings from configured directory sources and annotates each
- * entry with its install status relative to what is on this server.
+ * entry with its install status relative to what is on this server, and each
+ * declared requirement with its state (requires_state) against the installed map.
  *
  * The pure methods (annotate/merge/resolveAssetUrl) hold all the logic and are
  * unit-tested; fetchAll() is the thin network wrapper exercised by live E2E.
@@ -24,6 +25,7 @@ class DirectoryClient extends Base
 
     public function annotate(array $plugins, string $baseUrl, array $installedMap): array
     {
+        $resolver = new DependencyResolver($this->container);
         foreach ($plugins as &$plugin) {
             $name = $plugin['name'] ?? '';
             $version = (string) ($plugin['version'] ?? '0.0.0');
@@ -43,6 +45,9 @@ class DirectoryClient extends Base
             }
 
             $plugin['conflicts'] = PluginManager::normalizeConflicts($plugin['conflicts'] ?? []);
+            $plugin['requires_state'] = $resolver->resolveForward(
+                is_array($plugin['requires'] ?? null) ? $plugin['requires'] : [], 'requires', $installedMap, []
+            )['deps'];
 
             if (! empty($plugin['screenshots']) && is_array($plugin['screenshots'])) {
                 $plugin['screenshots'] = array_map(
