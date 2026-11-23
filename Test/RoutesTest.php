@@ -4,6 +4,7 @@ require_once 'tests/units/Base.php';
 
 use Kanboard\Plugin\ModMenu\Plugin;
 use KanboardTests\units\Base;
+use PHPUnit\Framework\Attributes\DataProvider;
 
 /** With URL rewriting on, every ModMenu address must reach a ModMenu controller. */
 class RoutesTest extends Base
@@ -15,7 +16,7 @@ class RoutesTest extends Base
         (new Plugin($this->container))->initialize();
     }
 
-    public function routes(): array
+    public static function routes(): array
     {
         return [
             ['config/modmenu', 'ModMenuController', 'show'],
@@ -37,6 +38,7 @@ class RoutesTest extends Base
     }
 
     /** @dataProvider routes */
+    #[DataProvider('routes')]
     public function testPathResolvesToAPluginControllerThatExists(string $path, string $controller, string $action): void
     {
         $route = $this->container['route']->findRoute($path);
@@ -46,6 +48,7 @@ class RoutesTest extends Base
     }
 
     /** @dataProvider routes */
+    #[DataProvider('routes')]
     public function testLinksUseTheCleanAddress(string $path, string $controller, string $action): void
     {
         $url = $this->container['helper']->url->to($controller, $action, ['plugin' => 'ModMenu']);
