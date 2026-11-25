@@ -42,6 +42,22 @@ class SourceRepositoryTest extends Base
         $this->repo->addSource('ftp://example.com/x.json');
     }
 
+    public function testAddSourceRejectsPlainHttp()
+    {
+        // A catalog names the zips an admin installs; over http an on-path attacker could swap them.
+        $this->expectException(ModMenuException::class);
+        $this->repo->addSource('http://example.com/plugins.json');
+    }
+
+    public function testSecureSplitsStoredSourcesByScheme()
+    {
+        $this->container['configModel']->save([SourceRepository::CONFIG_KEY => json_encode(['http://old.example/p.json', 'https://ok.example/p.json'])]);
+        $this->container['memoryCache']->flush();
+
+        $this->assertSame(['https://ok.example/p.json'], $this->repo->getSecureSources());
+        $this->assertSame(['http://old.example/p.json'], $this->repo->getInsecureSources());
+    }
+
     public function testRemoveSource()
     {
         $this->repo->addSource('https://example.com/a.json');

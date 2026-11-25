@@ -332,4 +332,21 @@ class DirectoryClientTest extends Base
             $this->assertSame(['Alpha', 'Beta'], array_column(DirectoryClient::sortPlugins([$b, $a], $order), 'name'), $order);
         }
     }
+
+    public function testFetchAllSkipsPlainHttpSourcesAndReportsThem()
+    {
+        $this->container['configModel']->save([\Kanboard\Plugin\ModMenu\Model\SourceRepository::CONFIG_KEY => json_encode(['http://old.example/p.json', 'https://ok.example/p.json'])]);
+        $this->container['memoryCache']->flush();
+        $http = $this->getMockBuilder(\Kanboard\Core\Http\Client::class)
+            ->setConstructorArgs([$this->container])->onlyMethods(['getJson'])->getMock();
+        $http->expects($this->once())->method('getJson')->with('https://ok.example/p.json')
+            ->willReturn([['name' => 'Alpha', 'version' => '1.0.0']]);
+        $this->container['httpClient'] = $http;
+
+        $result = (new DirectoryClient($this->container))->fetchAll();
+
+        $this->assertSame(['Alpha'], array_column($result['plugins'], 'name'));
+        $this->assertSame(['http://old.example/p.json'], array_column($result['errors'], 'url'));
+        $this->assertStringContainsString('https', $result['errors'][0]['message']);
+    }
 }

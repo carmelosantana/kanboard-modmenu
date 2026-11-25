@@ -31,11 +31,29 @@ class SourceRepository extends Base
         return is_array($decoded) ? array_values($decoded) : [self::DEFAULT_SOURCE];
     }
 
+    /** A catalog names the archives an admin installs, so only https:// sources are fetched. */
+    public static function isSecure(string $url): bool
+    {
+        return (bool) preg_match('#^https://#i', $url);
+    }
+
+    /** Stored sources that are fetched: https:// only. */
+    public function getSecureSources(): array
+    {
+        return array_values(array_filter($this->getSources(), [self::class, 'isSecure']));
+    }
+
+    /** Stored sources from before https was required; listed so the admin can remove or re-add them. */
+    public function getInsecureSources(): array
+    {
+        return array_values(array_filter($this->getSources(), static fn ($s) => ! self::isSecure((string) $s)));
+    }
+
     public function addSource(string $url): void
     {
         $url = trim($url);
-        if (! preg_match('#^https?://#i', $url) || filter_var($url, FILTER_VALIDATE_URL) === false) {
-            throw new ModMenuException(t('Please enter a valid http(s) URL.'));
+        if (! self::isSecure($url) || filter_var($url, FILTER_VALIDATE_URL) === false) {
+            throw new ModMenuException(t('Please enter a valid https:// URL.'));
         }
 
         $sources = $this->getSources();

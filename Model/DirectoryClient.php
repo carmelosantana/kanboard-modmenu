@@ -159,7 +159,11 @@ class DirectoryClient extends Base
         $sourcesData = [];
         $errors = [];
 
-        foreach ($sourceRepo->getSources() as $url) {
+        foreach ($sourceRepo->getInsecureSources() as $url) {
+            $errors[] = ['url' => $url, 'message' => t('Skipped: directory sources must use https://. Remove this source and add it again over https.')];
+        }
+
+        foreach ($sourceRepo->getSecureSources() as $url) {
             try {
                 $json = $this->httpClient->getJson($url);
                 $sourcesData[] = ['url' => $url, 'plugins' => is_array($json) ? $json : []];
