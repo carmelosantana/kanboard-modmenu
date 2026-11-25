@@ -188,6 +188,17 @@ class CalloutTemplateTest extends Base
         $this->assertStringContainsString('modmenu-callout__label', $inner);
     }
 
+    public function testInstalledDeprecationCalloutHasAnIconAndVisibleLabel(): void
+    {
+        $html = $this->installed([
+            'name' => 'ShadcnTheme',
+            'deprecated' => ['superseded_by' => 'Harbor', 'since' => '1.3.0', 'reason' => ''],
+        ]);
+        $inner = $this->calloutAround($html, 'modmenu-dep--deprecated');
+        $this->assertMatchesRegularExpression('/<i class="fa fa-[^"]+" aria-hidden="true"><\/i>/', $inner);
+        $this->assertMatchesRegularExpression('/<strong class="modmenu-callout__label">\s*Replaced by Harbor\.\s*<\/strong>/', $inner);
+    }
+
     public function testBrowseRequiresIsACallout()
     {
         $html = $this->browse(['name' => 'Addon', 'requires_state' => [$this->dep('missing', null)]]);

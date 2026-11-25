@@ -38,6 +38,8 @@
 .modmenu-dep--outdated > .fa { color: #d97706; }
 .modmenu-dep--met { background: rgba(22, 163, 74, 0.10); border: 1px solid rgba(22, 163, 74, 0.35); border-left: 3px solid #16a34a; color: inherit; }
 .modmenu-dep--met > .fa { color: #16a34a; }
+.modmenu-dep--deprecated { background: var(--muted, #eee); border: 1px solid var(--border, #ddd); border-left: 3px solid var(--primary, #4a6fa5); color: inherit; }
+.modmenu-dep--deprecated > .fa { color: var(--primary, #4a6fa5); }
 .modmenu-dep--recommended { color: color-mix(in srgb, currentColor 72%, transparent); }
 .modmenu-plan { margin: 8px 0 16px 18px; }
 /* Browse toolbar: rendered [hidden], revealed by modmenu.js; wraps on narrow screens, stacks full width on phones. */

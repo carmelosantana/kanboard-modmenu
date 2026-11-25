@@ -22,9 +22,21 @@
             <?php
                 $requiresState = $p['requires_state'] ?? [];
                 $unmetRecommends = array_values(array_filter($p['unmet_deps'] ?? [], static fn ($d) => ($d['kind'] ?? '') === 'recommends'));
+                $successor = $p['deprecated']['superseded_by'] ?? null;
             ?>
-            <?php if ($requiresState || $unmetRecommends || ! empty($p['active_conflicts'])): ?>
+            <?php if ($requiresState || $unmetRecommends || ! empty($p['active_conflicts']) || $successor !== null): ?>
             <div class="modmenu-card__alerts">
+            <?php if ($successor !== null): ?>
+                <?php
+                    $migrateUrl = $this->url->to('ModMenuController', 'migrate', ['plugin' => 'ModMenu']);
+                    $migrateUrl .= (str_contains($migrateUrl, '?') ? '&' : '?') . 'name=' . rawurlencode($p['name']);
+                ?>
+                <div class="modmenu-dep modmenu-callout modmenu-dep--deprecated">
+                    <i class="fa fa-info-circle" aria-hidden="true"></i>
+                    <span><strong class="modmenu-callout__label"><?= t('Replaced by %s.', $this->text->e($successor)) ?></strong></span>
+                    <a href="<?= $this->text->e($migrateUrl) ?>" class="btn"><?= t('Migrate') ?></a>
+                </div>
+            <?php endif ?>
             <?php if ($requiresState || $unmetRecommends): ?>
                 <div class="modmenu-deps">
                     <?php foreach ($requiresState as $dep): ?>

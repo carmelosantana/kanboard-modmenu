@@ -2,6 +2,10 @@
 
 require_once 'tests/units/Base.php';
 
+use Kanboard\Core\Http\Client;
+use Kanboard\Core\Http\Response;
+use Kanboard\Plugin\ModMenu\Controller\ModMenuController;
+use Kanboard\Plugin\ModMenu\Model\PluginManager;
 use KanboardTests\units\Base;
 
 /**
@@ -55,5 +59,58 @@ class InstalledTemplateTest extends Base
     public function testInstallerNoteHiddenWhenPluginInstallerOn()
     {
         $this->assertStringNotContainsString(self::INSTALLER_LINE, $this->decoded($this->render(false, true)));
+    }
+
+    public function testInstalledDeprecationUsesLocalMetadataAndLinksToMigration(): void
+    {
+        $root = sys_get_temp_dir() . '/modmenu-installed-' . uniqid();
+        $fixtures = [
+            'ShadcnTheme' => ['name' => 'Shadcn Theme', 'deprecated' => ['superseded_by' => 'Harbor']],
+            'Plain' => ['name' => 'Plain'],
+        ];
+
+        try {
+            foreach ($fixtures as $folder => $metadata) {
+                mkdir("$root/$folder", 0777, true);
+                file_put_contents("$root/$folder/Plugin.php", "<?php\n");
+                file_put_contents("$root/$folder/plugin.json", json_encode($metadata));
+            }
+
+            session_set('user', $this->container['userModel']->getById(1));
+            // The migration task registers this route in the plugin.
+            $this->container['route']->enable();
+            $this->container['route']->addRoute('config/modmenu/plugin/migrate', 'ModMenuController', 'migrate', 'ModMenu');
+
+            $http = $this->createMock(Client::class);
+            $http->expects($this->never())->method('getJson');
+            $this->container['httpClient'] = $http;
+
+            $body = '';
+            $response = $this->createMock(Response::class);
+            $response->expects($this->once())->method('html')->willReturnCallback(function ($html) use (&$body) {
+                $body = $html;
+            });
+            $this->container['response'] = $response;
+
+            $manager = (new PluginManager($this->container))->setDirectories($root, "$root/disabled");
+            $controller = $this->getMockBuilder(ModMenuController::class)
+                ->setConstructorArgs([$this->container])->onlyMethods(['manager', 'catalog'])->getMock();
+            $controller->method('manager')->willReturn($manager);
+            $controller->expects($this->never())->method('catalog');
+            $controller->show();
+
+            $this->assertStringContainsString('<strong>Plain</strong>', $body);
+            $this->assertSame(1, substr_count($body, 'Replaced by '));
+            $this->assertStringContainsString('Replaced by Harbor.', $body);
+            $this->assertSame(1, preg_match_all('~<a href="([^"]*)"[^>]*>Migrate</a>~', $body, $links));
+            $this->assertStringEndsWith('config/modmenu/plugin/migrate?name=ShadcnTheme', $links[1][0]);
+        } finally {
+            foreach (array_keys($fixtures) as $folder) {
+                unlink("$root/$folder/Plugin.php");
+                unlink("$root/$folder/plugin.json");
+                rmdir("$root/$folder");
+            }
+            rmdir($root);
+        }
     }
 }
