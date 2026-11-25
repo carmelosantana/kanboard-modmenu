@@ -372,18 +372,18 @@ class PluginManager extends Base
 
     /**
      * Installed, ACTIVE plugins that conflict with $name, declared on either
-     * side. $name need not be installed (Browse entries); $declared adds the
-     * conflicts a catalog entry lists for a plugin that is not installed yet.
+     * side, including replacements. For Browse entries, $declared and $replaces
+     * add the conflict and replacement names listed in the catalog.
      * The model never blocks on conflicts: the controller asks the admin
      * before enabling or installing (see disableConflicts()).
      */
-    public function activeConflicts(string $name, array $declared = []): array
+    public function activeConflicts(string $name, array $declared = [], array $replaces = []): array
     {
         $installed = $this->listInstalled();
-        $mine = self::normalizeConflicts($declared);
+        $mine = array_merge(self::normalizeConflicts($declared), self::normalizeReplaces($replaces));
         foreach ($installed as $p) {
             if ($p['name'] === $name) {
-                $mine = array_merge($mine, $p['conflicts']);
+                $mine = array_merge($mine, $p['conflicts'], $p['replaces']);
             }
         }
 
@@ -392,7 +392,8 @@ class PluginManager extends Base
             if ($p['status'] !== 'active' || $p['name'] === $name) {
                 continue;
             }
-            if (in_array($p['name'], $mine, true) || in_array($name, $p['conflicts'], true)) {
+            $theirs = array_merge($p['conflicts'], $p['replaces']);
+            if (in_array($p['name'], $mine, true) || in_array($name, $theirs, true)) {
                 $out[] = $p['name'];
             }
         }
@@ -405,9 +406,9 @@ class PluginManager extends Base
      * activated. Returns the names disabled. Stops on the first failure (for
      * example a conflicting plugin other active plugins require).
      */
-    public function disableConflicts(string $name, array $declared = []): array
+    public function disableConflicts(string $name, array $declared = [], array $replaces = []): array
     {
-        $conflicts = $this->activeConflicts($name, $declared);
+        $conflicts = $this->activeConflicts($name, $declared, $replaces);
         foreach ($conflicts as $other) {
             $this->disable($other);
         }

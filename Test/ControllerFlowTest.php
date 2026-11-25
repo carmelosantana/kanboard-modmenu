@@ -240,6 +240,25 @@ class ControllerFlowTest extends Base
         $this->assertSame('Plugin enabled.', $this->flashes['success']);
     }
 
+    public function testEnableSuccessorPromptsToDisableActiveReplacedPlugin()
+    {
+        $m = $this->getMockBuilder(PluginManager::class)
+            ->setConstructorArgs([$this->container])->onlyMethods(['listInstalled', 'enable'])->getMock();
+        $m->method('listInstalled')->willReturn([
+            ['name' => 'Harbor', 'status' => 'disabled', 'version' => '2.0.0', 'conflicts' => [], 'replaces' => ['ShadcnTheme']],
+            ['name' => 'ShadcnTheme', 'status' => 'active', 'version' => '1.3.0', 'conflicts' => [], 'replaces' => []],
+        ]);
+        $m->expects($this->never())->method('enable');
+        $this->post(['name' => 'Harbor']);
+
+        $this->controller($m)->enable();
+
+        $this->assertCount(1, $this->bodies);
+        $this->assertStringContainsString('Harbor conflicts with ShadcnTheme', $this->bodies[0]);
+        $this->assertStringContainsString('resolveConflict', $this->bodies[0]);
+        $this->assertSame([], $this->redirects);
+    }
+
     public function testResolveConflictConfirmDisablesThenEnables()
     {
         $m = $this->manager();
@@ -284,26 +303,26 @@ class ControllerFlowTest extends Base
 
     public function testInstallChecksCatalogDeclaredConflicts()
     {
-        $catalog = ['BattleLobby' => ['download' => 'https://x/b.zip', 'conflicts' => ['ShadcnTheme'], 'requires' => []]];
+        $catalog = ['Harbor' => ['download' => 'https://x/h.zip', 'conflicts' => ['BattleLobby'], 'replaces' => ['ShadcnTheme']]];
         $m = $this->manager();
-        $m->expects($this->once())->method('activeConflicts')->with('BattleLobby', ['ShadcnTheme'])->willReturn(['ShadcnTheme']);
+        $m->expects($this->once())->method('activeConflicts')->with('Harbor', ['BattleLobby'], ['ShadcnTheme'])->willReturn(['ShadcnTheme']);
         $m->expects($this->never())->method('installFromUrl');
-        $this->post(['name' => 'BattleLobby', 'archive_url' => 'https://x/b.zip']);
+        $this->post(['name' => 'Harbor', 'archive_url' => 'https://x/h.zip']);
 
         $this->controller($m, $catalog)->install();
 
-        $this->assertStringContainsString('BattleLobby conflicts with ShadcnTheme', $this->bodies[0]);
+        $this->assertStringContainsString('Harbor conflicts with ShadcnTheme', $this->bodies[0]);
     }
 
     public function testResolveConflictConfirmInstallPassesCatalogConflicts()
     {
-        $catalog = ['BattleLobby' => ['download' => 'https://x/b.zip', 'conflicts' => ['ShadcnTheme'], 'requires' => []]];
+        $catalog = ['Harbor' => ['download' => 'https://x/h.zip', 'conflicts' => ['BattleLobby'], 'replaces' => ['ShadcnTheme']]];
         $m = $this->manager();
-        $m->expects($this->once())->method('disableConflicts')->with('BattleLobby', ['ShadcnTheme'])->willReturn(['ShadcnTheme']);
+        $m->expects($this->once())->method('disableConflicts')->with('Harbor', ['BattleLobby'], ['ShadcnTheme'])->willReturn(['ShadcnTheme']);
         $m->method('forwardCheck')->willReturn(['satisfied' => true, 'blocked' => false, 'plan' => []]);
         $m->method('conflictWarning')->willReturn('');
-        $m->expects($this->once())->method('installFromUrl')->with('https://x/b.zip');
-        $this->post(['name' => 'BattleLobby', 'action' => 'install', 'decision' => 'confirm']);
+        $m->expects($this->once())->method('installFromUrl')->with('https://x/h.zip');
+        $this->post(['name' => 'Harbor', 'action' => 'install', 'decision' => 'confirm']);
 
         $this->controller($m, $catalog)->resolveConflict();
 

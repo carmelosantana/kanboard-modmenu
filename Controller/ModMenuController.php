@@ -70,12 +70,14 @@ class ModMenuController extends BaseController
         $this->requireAdmin();
         $result = (new DirectoryClient($this->container))->fetchAll();
 
-        // Show declared conflicts plus any active installed plugin that declares
-        // a conflict with this entry. Install/enable asks before acting on them.
+        // Show declared conflicts and replacements alongside active conflicts.
+        // Install/enable asks before acting on active conflicts.
         $manager = $this->manager();
         foreach ($result['plugins'] as &$p) {
             $declared = $p['conflicts'] ?? [];
-            $all = array_values(array_unique(array_merge($declared, $manager->activeConflicts((string) ($p['name'] ?? '')))));
+            $replaces = $p['replaces'] ?? [];
+            $active = $manager->activeConflicts((string) ($p['name'] ?? ''), $declared, $replaces);
+            $all = array_values(array_unique(array_merge($declared, $replaces, $active)));
             sort($all);
             $p['conflicts'] = $all;
         }
@@ -148,7 +150,7 @@ class ModMenuController extends BaseController
         $this->requireAdmin();
         $this->checkCSRFForm();
         $name = $this->postValue('name');
-        if ($this->promptOnConflict($name, 'enable', [])) {
+        if ($this->promptOnConflict($name, 'enable')) {
             return;
         }
         $this->forwardOrConfirm($name, 'enable', '');
@@ -185,7 +187,8 @@ class ModMenuController extends BaseController
             return;
         }
         $catalog = $this->catalog();
-        if ($this->promptOnConflict($name, 'install', $catalog[$name]['conflicts'] ?? [])) {
+        $entry = $catalog[$name] ?? [];
+        if ($this->promptOnConflict($name, 'install', $entry['conflicts'] ?? [], $entry['replaces'] ?? [])) {
             return;
         }
         // A named install always takes its download from the catalog.
@@ -206,16 +209,17 @@ class ModMenuController extends BaseController
         $manager = $this->manager();
         $catalog = $action === 'install' ? $this->catalog() : [];
         $declared = $catalog[$name]['conflicts'] ?? [];
+        $replaces = $catalog[$name]['replaces'] ?? [];
 
         if ($this->postValue('decision') !== 'confirm') {
-            $conflicts = $manager->activeConflicts($name, $declared);
+            $conflicts = $manager->activeConflicts($name, $declared, $replaces);
             $this->flash->failure(t('%s stays inactive until %s is disabled.', $name, implode(', ', $conflicts)));
             $action === 'install' ? $this->backToDirectory() : $this->backToInstalled();
             return;
         }
 
         try {
-            $disabled = $manager->disableConflicts($name, $declared);
+            $disabled = $manager->disableConflicts($name, $declared, $replaces);
         } catch (ModMenuException $e) {
             $this->flash->failure($e->getMessage());
             $action === 'install' ? $this->backToDirectory() : $this->backToInstalled();
@@ -280,7 +284,8 @@ class ModMenuController extends BaseController
         $target   = $action === 'install' ? (string) ($catalog[$name]['download'] ?? '') : '';
 
         // The conflict prompt must not be bypassable by posting here directly.
-        $conflicts = $manager->activeConflicts($name, $action === 'install' ? ($catalog[$name]['conflicts'] ?? []) : []);
+        $entry = $action === 'install' ? ($catalog[$name] ?? []) : [];
+        $conflicts = $manager->activeConflicts($name, $entry['conflicts'] ?? [], $entry['replaces'] ?? []);
         if ($conflicts !== []) {
             $this->flash->failure(t('%s conflicts with %s. Disable them first.', $name, implode(', ', $conflicts)));
             $action === 'install' ? $this->backToDirectory() : $this->backToInstalled();
@@ -401,9 +406,9 @@ class ModMenuController extends BaseController
      * Conflict gate for enable/install: when X conflicts with an active plugin,
      * render the confirm page instead of acting. Returns true when it rendered.
      */
-    private function promptOnConflict(string $name, string $action, array $declared): bool
+    private function promptOnConflict(string $name, string $action, array $declared = [], array $replaces = []): bool
     {
-        $conflicts = $this->manager()->activeConflicts($name, $declared);
+        $conflicts = $this->manager()->activeConflicts($name, $declared, $replaces);
         if ($conflicts === []) {
             return false;
         }

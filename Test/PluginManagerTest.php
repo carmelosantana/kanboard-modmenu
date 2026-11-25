@@ -550,6 +550,15 @@ class PluginManagerTest extends Base
         $this->assertSame(['Alpha'], $this->manager->activeConflicts('Beta'));
     }
 
+    public function testActiveConflictsTreatsReplacementsSymmetrically()
+    {
+        $this->seedPlugin($this->active, 'ShadcnTheme', '1.3.0');
+        $this->seedPlugin($this->active, 'Harbor', '2.0.0', ['replaces' => ['ShadcnTheme']]);
+
+        $this->assertSame(['ShadcnTheme'], $this->manager->activeConflicts('Harbor'));
+        $this->assertSame(['Harbor'], $this->manager->activeConflicts('ShadcnTheme'));
+    }
+
     public function testActiveConflictsForUninstalledName()
     {
         // Browse: an uninstalled directory entry an active plugin declares a conflict with.
@@ -738,6 +747,18 @@ class PluginManagerTest extends Base
         $this->seedPlugin($this->disabled, 'Beta', '1.0.0');
         $this->assertSame(['Alpha'], $this->manager->activeConflicts('New', ['Alpha', 'Beta']));
         $this->assertSame([], $this->manager->activeConflicts('New'));
+    }
+
+    public function testActiveConflictsIncludesCatalogReplacementsForUninstalledPlugin()
+    {
+        $this->seedPlugin($this->active, 'BattleLobby', '1.0.0');
+        $this->seedPlugin($this->active, 'ShadcnTheme', '1.3.0');
+        $this->seedPlugin($this->disabled, 'OldTheme', '1.0.0');
+
+        $this->assertSame(
+            ['BattleLobby', 'ShadcnTheme'],
+            $this->manager->activeConflicts('Harbor', ['BattleLobby'], ['ShadcnTheme', 'OldTheme'])
+        );
     }
 
     public function testDisableConflictsParksEveryActiveConflict()
