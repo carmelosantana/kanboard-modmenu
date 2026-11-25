@@ -5,6 +5,16 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.6.0] — 2026-11-25
+
+### Added
+
+- Plugins and directory entries can declare `replaces` and `deprecated`. ModMenu treats a successor and the plugin it replaces as conflicting. An active successor can satisfy dependencies on the old name.
+- Installed deprecated plugins show their successor and offer **Migrate**. ModMenu installs the successor if needed, disables the old plugin, and enables the successor. The old plugin stays installed.
+- Browse hides deprecated plugins by default. Search for the exact plugin name to find and install one.
+
+---
+
 ## 1.5.0 — 2026-11-20
 
 ### Added

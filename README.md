@@ -105,7 +105,7 @@ the list without reloading the page:
 
 A "Showing N of M" line follows the filter, with "No plugins match." when nothing does.
 Each card shows its category and, when known, the date it was last updated. The toolbar
-needs JavaScript; without it Browse shows the full list in the default order and no
+needs JavaScript; without it Browse shows non-deprecated entries in the default order and no
 controls.
 
 ### Requirement states
@@ -118,6 +118,26 @@ Each `requires` entry shows its state on the Browse and Installed tabs:
 | Installed but older than `min_version` | Amber warning — **Update needed:** `Dep — 0.9.0 installed, needs ≥ 1.0.0` (Installed offers **Update via Browse**) |
 | Not installed | Red — **Requires:** / **Missing requirement:** (Installed offers **Install**) |
 | Installed but disabled | Red — **Requirement disabled:** (Installed offers **Enable**) |
+
+## Renamed and deprecated plugins
+
+A successor declares the folder names it replaces in its `plugin.json` (for example,
+`"replaces": ["ShadcnTheme"]` in Harbor). The old plugin declares its successor in
+its own `plugin.json` (for example,
+`"deprecated": {"superseded_by": "Harbor", "since": "1.3.0", "reason": "Renamed to Harbor"}`
+in ShadcnTheme). Directory entries carry the same fields as the corresponding manifests.
+
+ModMenu treats the old plugin and its successor as conflicting. An active successor
+can satisfy a `requires` or `recommends` entry for the old name. The old entry's
+`min_version` applies only to the old plugin.
+
+On **Installed**, a deprecated plugin shows **Replaced by** and a **Migrate** button.
+When you confirm, ModMenu installs the successor if needed, disables the old plugin,
+and enables the successor. ModMenu never uninstalls plugins on its own. The old plugin
+stays installed but disabled.
+
+Deprecated plugins are hidden from **Browse** by default. Enter the exact plugin
+folder name in search to show its card and install it.
 
 ## Self-update
 

@@ -16,7 +16,13 @@ class PluginTest extends Base
     public function testPluginVersionValue()
     {
         $plugin = new Plugin($this->container);
-        $this->assertSame('1.5.0', $plugin->getPluginVersion());
+        $this->assertSame('1.6.0', $plugin->getPluginVersion());
+    }
+
+    public function testManifestVersionValue()
+    {
+        $manifest = json_decode(file_get_contents(__DIR__ . '/../plugin.json'), true, 512, JSON_THROW_ON_ERROR);
+        $this->assertSame('1.6.0', $manifest['version']);
     }
 
     public function testCompatibleVersion()
