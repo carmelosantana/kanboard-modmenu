@@ -62,6 +62,42 @@ class ArchiveDownloaderTest extends TestCase
         $this->assertRefused($downloader, 'The download was refused: downloads.example is not a public address.');
     }
 
+    public function testPublicIpv4FallbackIsPinnedWhenDnsHasNoARecords(): void
+    {
+        $resolve = (new ReflectionMethod(ArchiveDownloader::class, 'resolveHost'))->getClosure();
+        $downloader = new ArchiveDownloader(
+            fn ($host) => $resolve(
+                $host,
+                fn () => [['ipv6' => '2606:50c0:8000::153']],
+                fn () => ['140.82.112.3']
+            ),
+            function ($url, $address, $header, $write) {
+                $this->assertSame('140.82.112.3', $address);
+                $write(null, 'archive');
+                return [200, null];
+            }
+        );
+
+        $path = $downloader->download('https://downloads.example/plugin.zip');
+        try {
+            $this->assertSame('archive', file_get_contents($path));
+        } finally {
+            unlink($path);
+        }
+    }
+
+    public function testIpv4FallbackIsSkippedWhenDnsReturnsARecords(): void
+    {
+        $resolve = (new ReflectionMethod(ArchiveDownloader::class, 'resolveHost'))->getClosure();
+        $addresses = $resolve(
+            'downloads.example',
+            fn () => [['ip' => '140.82.112.3'], ['ipv6' => '2606:50c0:8000::153']],
+            fn () => $this->fail('IPv4 fallback must be skipped when DNS returns an A record.')
+        );
+
+        $this->assertSame(['140.82.112.3', '2606:50c0:8000::153'], $addresses);
+    }
+
     public function testEachRedirectHopIsResolvedAndPinned(): void
     {
         $resolved = [];
@@ -137,7 +173,7 @@ class ArchiveDownloaderTest extends TestCase
             function ($url, $address, $header) use ($before) {
                 $path = $this->newTempFile($before);
                 $line = 'Content-Length: ' . (PluginArchive::MAX_ARCHIVE_BYTES + 1) . "\r\n";
-                $this->assertSame(0, $header(null, $line));
+                $this->assertSame(0, $this->invokeCallback($header, $line));
                 $this->assertSame(0, filesize($path));
                 return [0, null];
             }
@@ -157,12 +193,12 @@ class ArchiveDownloaderTest extends TestCase
                     $path = $this->newTempFile($before);
                     $chunk = str_repeat('x', 1024 * 1024);
                     for ($bytes = 0; $bytes < PluginArchive::MAX_ARCHIVE_BYTES; $bytes += strlen($chunk)) {
-                        $this->assertSame(strlen($chunk), $write(null, $chunk));
+                        $this->assertSame(strlen($chunk), $this->invokeCallback($write, $chunk));
                     }
                     clearstatcache(true, $path);
                     $this->assertSame(PluginArchive::MAX_ARCHIVE_BYTES, filesize($path));
                     if ($oversized) {
-                        $this->assertSame(0, $write(null, 'x'));
+                        $this->assertSame(0, $this->invokeCallback($write, 'x'));
                         return [0, null];
                     }
                     return [200, null];
@@ -180,6 +216,15 @@ class ArchiveDownloaderTest extends TestCase
                 }
             }
             $this->assertSame($before, $this->tempFiles());
+        }
+    }
+
+    private function invokeCallback(callable $callback, string $data): mixed
+    {
+        try {
+            return $callback(null, $data);
+        } catch (\Throwable $e) {
+            $this->fail('callback must return the abort value, not throw: ' . $e->getMessage());
         }
     }
 
