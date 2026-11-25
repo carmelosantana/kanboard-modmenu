@@ -12,6 +12,7 @@
 <?php if (empty($plugins)): ?>
     <p class="alert"><?= t('No plugins found.') ?></p>
 <?php else: ?>
+    <?php $statusByName = array_column($plugins, 'status', 'name'); ?>
     <?php foreach ($plugins as $p): ?>
         <div class="modmenu-card">
             <strong><?= $this->text->e($p['title']) ?></strong>
@@ -27,14 +28,16 @@
             <?php if ($requiresState || $unmetRecommends || ! empty($p['active_conflicts']) || $successor !== null): ?>
             <div class="modmenu-card__alerts">
             <?php if ($successor !== null): ?>
-                <?php
-                    $migrateUrl = $this->url->to('ModMenuController', 'migrate', ['plugin' => 'ModMenu']);
-                    $migrateUrl .= (str_contains($migrateUrl, '?') ? '&' : '?') . 'name=' . rawurlencode($p['name']);
-                ?>
                 <div class="modmenu-dep modmenu-callout modmenu-dep--deprecated">
                     <i class="fa fa-info-circle" aria-hidden="true"></i>
                     <span><strong class="modmenu-callout__label"><?= t('Replaced by %s.', $this->text->e($successor)) ?></strong></span>
-                    <a href="<?= $this->text->e($migrateUrl) ?>" class="btn"><?= t('Migrate') ?></a>
+                    <?php if ($p['status'] === 'active' || ($statusByName[$successor] ?? null) !== 'active'): ?>
+                        <?php
+                        $migrateUrl = $this->url->to('ModMenuController', 'migrate', ['plugin' => 'ModMenu']);
+                        $migrateUrl .= (str_contains($migrateUrl, '?') ? '&' : '?') . 'name=' . rawurlencode($p['name']);
+                        ?>
+                        <a href="<?= $this->text->e($migrateUrl) ?>" class="btn"><?= t('Migrate') ?></a>
+                    <?php endif ?>
                 </div>
             <?php endif ?>
             <?php if ($requiresState || $unmetRecommends): ?>

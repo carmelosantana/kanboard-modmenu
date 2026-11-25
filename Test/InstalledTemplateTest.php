@@ -7,6 +7,7 @@ use Kanboard\Core\Http\Response;
 use Kanboard\Plugin\ModMenu\Controller\ModMenuController;
 use Kanboard\Plugin\ModMenu\Model\PluginManager;
 use KanboardTests\units\Base;
+use PHPUnit\Framework\Attributes\DataProvider;
 
 /**
  * Installed tab: ModMenu's own card (self-update hints) and the
@@ -61,19 +62,41 @@ class InstalledTemplateTest extends Base
         $this->assertStringNotContainsString(self::INSTALLER_LINE, $this->decoded($this->render(false, true)));
     }
 
-    public function testInstalledDeprecationUsesLocalMetadataAndLinksToMigration(): void
+    public static function migrationStates(): array
+    {
+        return [
+            'old active, successor missing' => ['active', null, true],
+            'old active, successor active' => ['active', 'active', true],
+            'old disabled, successor missing' => ['disabled', null, true],
+            'old disabled, successor disabled' => ['disabled', 'disabled', true],
+            'migration completed' => ['disabled', 'active', false],
+        ];
+    }
+
+    /** @dataProvider migrationStates */
+    #[DataProvider('migrationStates')]
+    public function testInstalledDeprecationUsesLocalMetadata(string $oldStatus, ?string $successorStatus, bool $showMigrate): void
     {
         $root = sys_get_temp_dir() . '/modmenu-installed-' . uniqid();
+        $active = "$root/active";
+        $disabled = "$root/disabled";
+        $oldDir = $oldStatus === 'active' ? $active : $disabled;
         $fixtures = [
-            'ShadcnTheme' => ['name' => 'Shadcn Theme', 'deprecated' => ['superseded_by' => 'Harbor']],
-            'Plain' => ['name' => 'Plain'],
+            "$oldDir/ShadcnTheme" => ['name' => 'Shadcn Theme', 'deprecated' => ['superseded_by' => 'Harbor']],
+            "$active/Plain" => ['name' => 'Plain'],
         ];
+        if ($successorStatus !== null) {
+            $successorDir = $successorStatus === 'active' ? $active : $disabled;
+            $fixtures["$successorDir/Harbor"] = ['name' => 'Harbor Theme'];
+        }
 
         try {
-            foreach ($fixtures as $folder => $metadata) {
-                mkdir("$root/$folder", 0777, true);
-                file_put_contents("$root/$folder/Plugin.php", "<?php\n");
-                file_put_contents("$root/$folder/plugin.json", json_encode($metadata));
+            mkdir($active, 0777, true);
+            mkdir($disabled);
+            foreach ($fixtures as $path => $metadata) {
+                mkdir($path);
+                file_put_contents("$path/Plugin.php", "<?php\n");
+                file_put_contents("$path/plugin.json", json_encode($metadata));
             }
 
             session_set('user', $this->container['userModel']->getById(1));
@@ -92,7 +115,7 @@ class InstalledTemplateTest extends Base
             });
             $this->container['response'] = $response;
 
-            $manager = (new PluginManager($this->container))->setDirectories($root, "$root/disabled");
+            $manager = (new PluginManager($this->container))->setDirectories($active, $disabled);
             $controller = $this->getMockBuilder(ModMenuController::class)
                 ->setConstructorArgs([$this->container])->onlyMethods(['manager', 'catalog'])->getMock();
             $controller->method('manager')->willReturn($manager);
@@ -102,14 +125,18 @@ class InstalledTemplateTest extends Base
             $this->assertStringContainsString('<strong>Plain</strong>', $body);
             $this->assertSame(1, substr_count($body, 'Replaced by '));
             $this->assertStringContainsString('Replaced by Harbor.', $body);
-            $this->assertSame(1, preg_match_all('~<a href="([^"]*)"[^>]*>Migrate</a>~', $body, $links));
-            $this->assertStringEndsWith('config/modmenu/plugin/migrate?name=ShadcnTheme', $links[1][0]);
-        } finally {
-            foreach (array_keys($fixtures) as $folder) {
-                unlink("$root/$folder/Plugin.php");
-                unlink("$root/$folder/plugin.json");
-                rmdir("$root/$folder");
+            $this->assertSame($showMigrate ? 1 : 0, preg_match_all('~<a href="([^"]*)"[^>]*>Migrate</a>~', $body, $links));
+            if ($showMigrate) {
+                $this->assertStringEndsWith('config/modmenu/plugin/migrate?name=ShadcnTheme', $links[1][0]);
             }
+        } finally {
+            foreach (array_keys($fixtures) as $path) {
+                unlink("$path/Plugin.php");
+                unlink("$path/plugin.json");
+                rmdir($path);
+            }
+            rmdir($active);
+            rmdir($disabled);
             rmdir($root);
         }
     }
