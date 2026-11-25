@@ -107,11 +107,42 @@ class DirectoryClientTest extends Base
             ['url' => $http, 'message' => 'The download URL must be a valid https:// URL.'],
             ['url' => $private, 'message' => 'The download was refused: private.example is not a public address.'],
             ['url' => $loop, 'message' => 'Too many redirects while downloading the plugin archive.'],
-            ['url' => $invalid, 'message' => 'Syntax error'],
+            ['url' => $invalid, 'message' => 'This directory listing is not valid JSON.'],
         ], $result['errors']);
         $this->assertSame(['Alpha'], array_column($result['plugins'], 'name'));
         $this->assertSame([$valid], array_column($result['plugins'], 'source_url'));
         $this->assertSame($before, glob(sys_get_temp_dir() . '/modmenu_dl*'));
+    }
+
+    public function testFetchAllReportsDirectoryErrorsForFailedOrEmptyResponses(): void
+    {
+        $responses = [
+            'https://catalog.example/missing' => [404, 'Not found'],
+            'https://catalog.example/unavailable' => [500, 'Server error'],
+            'https://catalog.example/transfer' => [0, '[{"name":'],
+            'https://catalog.example/empty' => [200, ''],
+        ];
+        $urls = array_keys($responses);
+        $this->container['configModel']->save([SourceRepository::CONFIG_KEY => json_encode($urls)]);
+        $this->container['memoryCache']->flush();
+        $this->container['modMenuDirectoryDownloader'] = new ArchiveDownloader(
+            static fn () => ['140.82.112.3'],
+            static function ($url, $address, $header, $write) use ($responses) {
+                [$status, $body] = $responses[$url];
+                if ($body !== '') {
+                    $write(null, $body);
+                }
+                return [$status, null];
+            }
+        );
+
+        $this->assertSame([
+            'plugins' => [],
+            'errors' => array_map(static fn ($url) => [
+                'url' => $url,
+                'message' => "Couldn't load this directory listing.",
+            ], $urls),
+        ], $this->client->fetchAll());
     }
 
     public function testFetchAllRejectsAnOversizedListingWhileStreaming(): void

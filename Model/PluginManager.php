@@ -487,7 +487,7 @@ class PluginManager extends Base
         if (! @flock($lock, LOCK_EX | LOCK_NB, $wouldBlock)) {
             fclose($lock);
             throw new ModMenuException($wouldBlock
-                ? t('"%s" is already installed.', $name)
+                ? t('%s is busy with another ModMenu action. Try again in a moment.', $name)
                 : t('Could not lock "%s" for installation.', $name));
         }
 

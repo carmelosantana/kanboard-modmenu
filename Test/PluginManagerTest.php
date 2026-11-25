@@ -911,7 +911,7 @@ class PluginManagerTest extends Base
                 $this->manager->enable('Harbor');
                 $this->fail('A concurrent request enabled the pending successor.');
             } catch (ModMenuException $e) {
-                $this->assertSame('"Harbor" is already installed.', html_entity_decode($e->getMessage(), ENT_QUOTES));
+                $this->assertSame('Harbor is busy with another ModMenu action. Try again in a moment.', $e->getMessage());
             }
             $checked = true;
             if ($fail) {
@@ -1149,7 +1149,7 @@ class PluginManagerTest extends Base
                 $this->manager->installFromUrl($url, 'Harbor', true);
                 $this->fail('Expected the competing install to be refused.');
             } catch (ModMenuException $e) {
-                $this->assertSame('"Harbor" is already installed.', html_entity_decode($e->getMessage(), ENT_QUOTES));
+                $this->assertSame('Harbor is busy with another ModMenu action. Try again in a moment.', $e->getMessage());
             }
             $this->assertDirectoryDoesNotExist($this->disabled . '/Harbor');
         } finally {
@@ -1158,6 +1158,62 @@ class PluginManagerTest extends Base
 
         $this->assertSame('Harbor', $this->manager->installFromUrl($url, 'Harbor', true));
         $this->assertFileExists($this->disabled . '/Harbor/Plugin.php');
+    }
+
+    /** @dataProvider lockedPluginActions */
+    public function testPluginActionsReportLockContention(string $action, string $status): void
+    {
+        $directory = $status === 'disabled' ? $this->disabled : $this->active;
+        $this->seedPlugin($directory, 'Harbor', '1.0.0');
+        $before = $this->manager->installedMap();
+        $message = 'Harbor is busy with another ModMenu action. Try again in a moment.';
+        $lock = $this->openInstallLock();
+
+        try {
+            $this->assertTrue(flock($lock, LOCK_EX | LOCK_NB));
+            if ($action === 'update') {
+                $url = 'https://x/harbor.zip';
+                $this->stubDownloads([$url => $this->makeZip('Harbor', '2.0.0')]);
+                $this->assertSame(
+                    ['updated' => [], 'failed' => ['Harbor' => $message]],
+                    $this->manager->updateAll(['Harbor' => ['version' => '2.0.0', 'download' => $url]])
+                );
+            } else {
+                try {
+                    $this->manager->$action('Harbor');
+                    $this->fail('Expected the competing action to be refused.');
+                } catch (ModMenuException $e) {
+                    $this->assertSame($message, $e->getMessage());
+                }
+            }
+            $this->assertSame($before, $this->manager->installedMap());
+        } finally {
+            fclose($lock);
+        }
+    }
+
+    public static function lockedPluginActions(): array
+    {
+        return [
+            'enable' => ['enable', 'disabled'],
+            'disable' => ['disable', 'active'],
+            'uninstall' => ['uninstall', 'active'],
+            'update' => ['update', 'active'],
+        ];
+    }
+
+    public function testFreshInstallStillReportsAnInstalledPlugin(): void
+    {
+        $this->seedPlugin($this->active, 'Harbor', '1.0.0');
+        $url = 'https://x/harbor.zip';
+        $this->stubDownloads([$url => $this->makeZip('Harbor', '2.0.0')]);
+
+        try {
+            $this->manager->installFromUrl($url, 'Harbor', true);
+            $this->fail('Expected the duplicate install to be refused.');
+        } catch (ModMenuException $e) {
+            $this->assertSame('"Harbor" is already installed.', html_entity_decode($e->getMessage(), ENT_QUOTES));
+        }
     }
 
     /** @dataProvider destinationsOccupiedDuringStaging */

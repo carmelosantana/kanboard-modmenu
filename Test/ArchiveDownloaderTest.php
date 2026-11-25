@@ -219,6 +219,33 @@ class ArchiveDownloaderTest extends TestCase
         }
     }
 
+    public function testEachHopUsesTheTimeoutsForItsDownloadType(): void
+    {
+        $timeouts = [];
+        $downloader = new ArchiveDownloader(
+            static fn () => ['140.82.112.3'],
+            static function ($url, $address, $header, $write, $headers, $timeout = null, $connectTimeout = null) use (&$timeouts) {
+                $timeouts[] = [$url, $timeout, $connectTimeout];
+                if ($url === 'https://downloads.example/redirect') {
+                    return [302, 'https://assets.example/file'];
+                }
+                $write(null, '[]');
+                return [200, null];
+            }
+        );
+
+        $path = $downloader->download('https://downloads.example/redirect');
+        unlink($path);
+        $this->assertSame([], $downloader->fetchJson('https://downloads.example/redirect'));
+
+        $this->assertSame([
+            ['https://downloads.example/redirect', 120, 10],
+            ['https://assets.example/file', 120, 10],
+            ['https://downloads.example/redirect', 15, 5],
+            ['https://assets.example/file', 15, 5],
+        ], $timeouts);
+    }
+
     public function testCatalogContentLengthOverCapAbortsBeforeBody(): void
     {
         $before = $this->tempFiles();
