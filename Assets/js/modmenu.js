@@ -44,23 +44,29 @@
         var search = toolbar.querySelector('#modmenu-search');
         var category = toolbar.querySelector('#modmenu-category');
         var sort = toolbar.querySelector('#modmenu-sort');
-        var terms = (search ? search.value : '').toLowerCase().split(/\s+/).filter(Boolean);
+        var query = (search ? search.value : '').trim().toLowerCase();
+        var terms = query.split(/\s+/).filter(Boolean);
         var cat = category ? category.value : 'all';
         var order = sort && ORDERS.indexOf(sort.value) !== -1 ? sort.value : ORDERS[0];
         var shown = 0;
+        var total = 0;
 
         cards.forEach(function (card) {
+            var deprecated = card.dataset.deprecated === '1';
             var text = card.dataset.search || '';
-            var match = (cat === 'all' || card.dataset.category === cat) &&
-                terms.every(function (t) { return text.indexOf(t) !== -1; });
+            var matchesSearch = deprecated
+                ? query !== '' && query === (card.dataset.name || '').toLowerCase()
+                : terms.every(function (t) { return text.indexOf(t) !== -1; });
+            var match = (cat === 'all' || card.dataset.category === cat) && matchesSearch;
             card.hidden = !match;
             if (match) { shown++; }
+            if (!deprecated || match) { total++; }
         });
         cards.sort(compare(order)).forEach(function (card) { list.appendChild(card); });
 
         var count = toolbar.querySelector('.modmenu-toolbar__count');
         if (count && count.dataset.format) {
-            count.textContent = count.dataset.format.replace('{shown}', shown).replace('{total}', cards.length);
+            count.textContent = count.dataset.format.replace('{shown}', shown).replace('{total}', total);
         }
         var empty = document.querySelector('.modmenu-empty');
         if (empty) { empty.hidden = shown !== 0; }

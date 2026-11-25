@@ -85,6 +85,8 @@ class ModMenuController extends BaseController
 
         // The rendered order is the no-JS default; the toolbar JS re-sorts client-side.
         $plugins = DirectoryClient::sortPlugins($result['plugins'], 'updated');
+        // Updates include final releases of deprecated plugins.
+        $updates = $manager->updatesAvailable(DirectoryClient::indexByName($result['plugins']));
 
         $this->response->html($this->helper->layout->config('ModMenu:settings/directory', [
             'title' => t('ModMenu'),
@@ -92,7 +94,7 @@ class ModMenuController extends BaseController
             'plugins' => $plugins,
             'category_counts' => DirectoryClient::categoryCounts($plugins),
             'errors' => $result['errors'],
-            'updates' => $manager->updatesAvailable(DirectoryClient::indexByName($result['plugins'])),
+            'updates' => $updates,
             'is_configured' => $manager->isConfigured(),
         ]));
     }

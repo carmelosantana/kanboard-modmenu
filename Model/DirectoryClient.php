@@ -60,11 +60,14 @@ class DirectoryClient extends Base
         return $plugins;
     }
 
-    /** Entries per category, A–Z (case-insensitive) with Other last. */
+    /** Non-deprecated entries per category, A–Z (case-insensitive) with Other last. */
     public static function categoryCounts(array $plugins): array
     {
         $counts = [];
         foreach ($plugins as $plugin) {
+            if (! empty($plugin['deprecated'])) {
+                continue;
+            }
             $c = (string) ($plugin['category'] ?? '');
             $category = $c === '' ? self::OTHER_CATEGORY : $c;
             $counts[$category] = ($counts[$category] ?? 0) + 1;

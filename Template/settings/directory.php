@@ -28,7 +28,7 @@
 <?php if (empty($plugins)): ?>
     <p class="alert"><?= t('No plugins available from the configured sources.') ?></p>
 <?php else: ?>
-    <?php $total = count($plugins) ?>
+    <?php $total = isset($category_counts) ? array_sum($category_counts) : count($plugins) ?>
     <div class="modmenu-toolbar" hidden>
         <div class="modmenu-toolbar__field modmenu-toolbar__field--search">
             <label for="modmenu-search" class="modmenu-sr-only"><?= t('Search plugins') ?></label>
@@ -63,7 +63,7 @@
                 $cardTitle, $p['name'] ?? '', $p['description'] ?? '', $p['author'] ?? '', $p['category'] ?? '',
             ]), 'strlen')));
         ?>
-        <div class="modmenu-card" data-title="<?= $this->text->e($cardTitle) ?>" data-name="<?= $this->text->e((string) ($p['name'] ?? '')) ?>" data-search="<?= $this->text->e($cardSearch) ?>" data-category="<?= $this->text->e((string) ($p['category'] ?? '')) ?>" data-author="<?= $this->text->e((string) ($p['author'] ?? '')) ?>" data-added="<?= $this->text->e((string) ($p['added'] ?? '')) ?>" data-updated="<?= $this->text->e((string) ($p['last_updated'] ?? '')) ?>">
+        <div class="modmenu-card" data-title="<?= $this->text->e($cardTitle) ?>" data-name="<?= $this->text->e((string) ($p['name'] ?? '')) ?>" data-search="<?= $this->text->e($cardSearch) ?>" data-category="<?= $this->text->e((string) ($p['category'] ?? '')) ?>" data-author="<?= $this->text->e((string) ($p['author'] ?? '')) ?>" data-added="<?= $this->text->e((string) ($p['added'] ?? '')) ?>" data-updated="<?= $this->text->e((string) ($p['last_updated'] ?? '')) ?>"<?= ! empty($p['deprecated']) ? ' hidden data-deprecated="1"' : '' ?>>
             <strong><?= $this->text->e($cardTitle) ?></strong>
             <?php if (($p['category'] ?? '') !== ''): ?>
                 <span class="modmenu-category"><?= $this->text->e((string) $p['category']) ?></span>

@@ -306,6 +306,18 @@ class DirectoryClientTest extends Base
         );
     }
 
+    public function testCategoryCountsExcludeDeprecatedEntries()
+    {
+        $deprecation = ['superseded_by' => 'Harbor', 'since' => '1.3.0', 'reason' => ''];
+        $plugins = [
+            ['name' => 'Harbor', 'category' => 'Theme', 'deprecated' => null],
+            ['name' => 'ShadcnTheme', 'category' => 'Theme', 'deprecated' => $deprecation],
+            ['name' => 'LegacyTheme', 'category' => 'Legacy', 'deprecated' => $deprecation],
+        ];
+
+        $this->assertSame(['Theme' => 1], DirectoryClient::categoryCounts($plugins));
+    }
+
     public function testAnnotateCleansThirdPartyRequiresBeforeClassifying()
     {
         $plugins = [['name' => 'Foo', 'version' => '1.0.0', 'requires' => [

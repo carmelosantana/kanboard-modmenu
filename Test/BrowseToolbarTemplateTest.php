@@ -3,6 +3,10 @@
 require_once 'tests/units/Base.php';
 
 use KanboardTests\units\Base;
+use Kanboard\Core\Http\Client;
+use Kanboard\Core\Http\Response;
+use Kanboard\Plugin\ModMenu\Controller\ModMenuController;
+use Kanboard\Plugin\ModMenu\Model\PluginManager;
 
 /**
  * Browse toolbar: search, category and sort controls rendered hidden (the JS
@@ -158,5 +162,60 @@ class BrowseToolbarTemplateTest extends Base
     public function testCardsCarryTheirNameForTieBreaks()
     {
         $this->assertStringContainsString('data-title="Fun2" data-name="Fun2"', $this->sample());
+    }
+
+    public function testDeprecatedCardStartsHiddenButStillHasAnInstallForm()
+    {
+        $html = $this->browse([
+            ['name' => 'Harbor', 'category' => 'Theme'],
+            [
+                'name' => 'ShadcnTheme', 'category' => 'Theme',
+                'deprecated' => ['superseded_by' => 'Harbor', 'since' => '1.3.0', 'reason' => ''],
+                'download' => 'https://example.com/shadcn.zip',
+            ],
+        ], ['Theme' => 1]);
+
+        $this->assertSame(1, preg_match('#<div class="modmenu-card"[^>]*data-name="ShadcnTheme"[^>]*>#', $html, $card));
+        $this->assertMatchesRegularExpression('#\shidden[\s>]#', $card[0]);
+        $this->assertStringContainsString('data-deprecated="1"', $card[0]);
+        $this->assertMatchesRegularExpression('#<form method="post" class="modmenu-action"[^>]*>\s*.*?name="name" value="ShadcnTheme".*?>Install</button>\s*</form>#s', $html);
+        $this->assertStringContainsString('All categories (1)', $html);
+        $this->assertStringContainsString('Showing 1 of 1', $html);
+    }
+
+    public function testInstalledDeprecatedPluginStillAppearsInBrowseUpdates()
+    {
+        session_set('user', $this->container['userModel']->getById(1));
+        $http = $this->createMock(Client::class);
+        $http->method('getJson')->willReturn([[
+            'name' => 'ShadcnTheme', 'version' => '1.3.0',
+            'deprecated' => ['superseded_by' => 'Harbor', 'since' => '1.3.0'],
+            'download' => 'https://example.com/shadcn.zip',
+        ]]);
+        $this->container['httpClient'] = $http;
+
+        $manager = $this->getMockBuilder(PluginManager::class)
+            ->setConstructorArgs([$this->container])->onlyMethods(['listInstalled', 'isConfigured'])->getMock();
+        $manager->method('isConfigured')->willReturn(true);
+        $manager->method('listInstalled')->willReturn([
+            [
+                'name' => 'ShadcnTheme', 'version' => '1.2.0', 'status' => 'active',
+                'conflicts' => [], 'replaces' => [], 'deprecated' => null,
+            ],
+        ]);
+        $response = $this->createMock(Response::class);
+        $response->expects($this->once())->method('html')->with($this->callback(function ($html) {
+            $this->assertMatchesRegularExpression(
+                '#<ul class="modmenu-updates__list">\s*<li>\s*<span class="modmenu-updates__name">ShadcnTheme</span>\s*<span class="modmenu-updates__version">1\.2\.0 &rarr; <strong>1\.3\.0</strong></span>#',
+                $html
+            );
+            return true;
+        }));
+        $this->container['response'] = $response;
+
+        $controller = $this->getMockBuilder(ModMenuController::class)
+            ->setConstructorArgs([$this->container])->onlyMethods(['manager'])->getMock();
+        $controller->method('manager')->willReturn($manager);
+        $controller->directory();
     }
 }
