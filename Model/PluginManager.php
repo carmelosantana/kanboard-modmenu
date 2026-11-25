@@ -287,6 +287,8 @@ class PluginManager extends Base
             'requires' => [],
             'recommends' => [],
             'conflicts' => [],
+            'replaces' => [],
+            'deprecated' => null,
         ];
 
         $jsonFile = $path . '/plugin.json';
@@ -305,6 +307,8 @@ class PluginManager extends Base
                 $meta['requires']   = self::normalizeDeps($json['requires'] ?? []);
                 $meta['recommends'] = self::normalizeDeps($json['recommends'] ?? []);
                 $meta['conflicts']  = self::normalizeConflicts($json['conflicts'] ?? []);
+                $meta['replaces']   = self::normalizeReplaces($json['replaces'] ?? []);
+                $meta['deprecated'] = self::normalizeDeprecated($json['deprecated'] ?? null);
             }
         }
         return $meta;
@@ -345,6 +349,25 @@ class PluginManager extends Base
             return [];
         }
         return array_values(array_filter($raw, static fn ($c) => is_string($c) && $c !== ''));
+    }
+
+    public static function normalizeReplaces($raw): array
+    {
+        return self::normalizeConflicts($raw);
+    }
+
+    public static function normalizeDeprecated($raw): ?array
+    {
+        $successor = is_array($raw) ? ($raw['superseded_by'] ?? null) : null;
+        if (! is_string($successor) || $successor === '') {
+            return null;
+        }
+
+        return [
+            'superseded_by' => $successor,
+            'since' => is_string($raw['since'] ?? null) ? $raw['since'] : '',
+            'reason' => is_string($raw['reason'] ?? null) ? $raw['reason'] : '',
+        ];
     }
 
     /**

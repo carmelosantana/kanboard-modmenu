@@ -41,14 +41,14 @@ class PluginManagerTest extends Base
         rmdir($d);
     }
 
-    private function seedPlugin(string $dir, string $name, string $version): void
+    private function seedPlugin(string $dir, string $name, string $version, array $metadata = []): void
     {
         mkdir("$dir/$name", 0777, true);
         file_put_contents("$dir/$name/Plugin.php", "<?php\n");
         file_put_contents("$dir/$name/plugin.json", json_encode([
             'name' => $name, 'version' => $version, 'description' => "$name desc",
             'author' => 'Tester', 'homepage' => 'https://example.com',
-        ]));
+        ] + $metadata));
     }
 
     public function testListInstalledMergesActiveAndDisabled()
@@ -76,6 +76,21 @@ class PluginManagerTest extends Base
         $names = array_column($this->manager->listInstalled(), 'name');
         $this->assertSame(['Alpha'], $names);
         $this->assertSame(['Alpha'], array_keys($this->manager->installedMap()));
+    }
+
+    public function testListInstalledReadsReplacementAndDeprecationMetadata()
+    {
+        $deprecated = ['superseded_by' => 'Harbor', 'since' => '1.3.0', 'reason' => 'Renamed'];
+        $this->seedPlugin($this->active, 'Harbor', '2.0.0', ['replaces' => ['ShadcnTheme']]);
+        $this->seedPlugin($this->active, 'Plain', '1.0.0');
+        $this->seedPlugin($this->disabled, 'ShadcnTheme', '1.3.0', ['deprecated' => $deprecated]);
+
+        $installed = array_column($this->manager->listInstalled(), null, 'name');
+        $this->assertSame(['ShadcnTheme'], $installed['Harbor']['replaces']);
+        $this->assertSame($deprecated, $installed['ShadcnTheme']['deprecated']);
+        $this->assertSame([], $installed['Plain']['replaces']);
+        $this->assertArrayHasKey('deprecated', $installed['Plain']);
+        $this->assertNull($installed['Plain']['deprecated']);
     }
 
     public function testUninstallRefusesDotNameAndLeavesItUntouched()
@@ -360,6 +375,27 @@ class PluginManagerTest extends Base
                 'junk',
             ])
         );
+    }
+
+    public function testNormalizeReplacesKeepsOnlyNonEmptyStrings()
+    {
+        $this->assertSame(['ShadcnTheme'], PluginManager::normalizeReplaces([5, '', ['Old'], 'ShadcnTheme']));
+        $this->assertSame([], PluginManager::normalizeReplaces('ShadcnTheme'));
+    }
+
+    public function testNormalizeDeprecatedRequiresANonEmptyStringSuccessor()
+    {
+        foreach ([false, [], ['superseded_by' => 5], ['superseded_by' => '']] as $invalid) {
+            $this->assertNull(PluginManager::normalizeDeprecated($invalid));
+        }
+
+        $expected = ['superseded_by' => 'Harbor', 'since' => '', 'reason' => ''];
+        $this->assertSame($expected, PluginManager::normalizeDeprecated(['superseded_by' => 'Harbor']));
+        $this->assertSame($expected, PluginManager::normalizeDeprecated([
+            'superseded_by' => 'Harbor',
+            'since' => ['1.3.0'],
+            'reason' => 5,
+        ]));
     }
 
     public function testRequirementStatesIsEmptyWithoutRequires()

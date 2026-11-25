@@ -135,6 +135,22 @@ class DirectoryClientTest extends Base
         $this->assertSame(['ShadcnTheme'], $merged[0]['conflicts']);
     }
 
+    public function testAnnotateNormalizesReplacementAndDeprecationMetadata()
+    {
+        $plugins = [
+            ['name' => 'Harbor', 'replaces' => [5, 'ShadcnTheme', ''], 'deprecated' => ['superseded_by' => 5]],
+            ['name' => 'ShadcnTheme', 'replaces' => 'Old', 'deprecated' => ['superseded_by' => 'Harbor', 'since' => '1.3.0']],
+            ['name' => 'Plain'],
+        ];
+        $out = $this->client->annotate($plugins, 'https://x.com/plugins.json', []);
+
+        $this->assertSame([['ShadcnTheme'], [], []], array_column($out, 'replaces'));
+        $this->assertSame(
+            [null, ['superseded_by' => 'Harbor', 'since' => '1.3.0', 'reason' => ''], null],
+            array_column($out, 'deprecated')
+        );
+    }
+
     public function testAnnotateClassifiesEachRequirementAgainstTheInstalledMap()
     {
         $plugins = [[

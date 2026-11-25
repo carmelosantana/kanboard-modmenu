@@ -116,6 +116,8 @@ class DirectoryClient extends Base
             }
 
             $plugin['conflicts'] = PluginManager::normalizeConflicts($plugin['conflicts'] ?? []);
+            $plugin['replaces'] = PluginManager::normalizeReplaces($plugin['replaces'] ?? []);
+            $plugin['deprecated'] = PluginManager::normalizeDeprecated($plugin['deprecated'] ?? null);
             $plugin['requires'] = PluginManager::normalizeDeps($plugin['requires'] ?? []);
             $plugin['requires_state'] = $resolver->resolveForward($plugin['requires'], 'requires', $installedMap, [])['deps'];
 
