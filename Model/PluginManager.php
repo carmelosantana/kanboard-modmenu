@@ -117,23 +117,13 @@ class PluginManager extends Base
         return $successor;
     }
 
-    /** Install a missing successor without making it visible to the plugin loader. */
+    /** Check that migration can obtain its successor, without downloading it. */
     public function prepareMigration(string $old, array $catalog): string
     {
         $successor = $this->migrationSuccessor($old);
         $this->guardSelf($old);
-        if (isset($this->installedMap()[$successor])) {
-            return $successor;
-        }
-
-        $url = $catalog[$successor]['download'] ?? '';
-        if ($url === '') {
+        if (! isset($this->installedMap()[$successor]) && empty($catalog[$successor]['download'])) {
             throw new ModMenuException(t('%s is not in the plugin directory, so nothing changed.', $successor));
-        }
-        try {
-            $this->installFromUrl($url, $successor, true);
-        } catch (ModMenuException $e) {
-            throw new ModMenuException(e("Couldn't install %s, so %s stays active.", $successor, $old), 0, $e);
         }
         return $successor;
     }
@@ -142,7 +132,8 @@ class PluginManager extends Base
     {
         $map = $this->installedMap();
         $map[$old]['status'] = 'disabled';
-        $requires = $this->installedPluginsDeps()[$successor]['requires'] ?? [];
+        $requires = $this->installedPluginsDeps()[$successor]['requires']
+            ?? self::normalizeDeps($catalog[$successor]['requires'] ?? []);
         $check = $this->forwardCheck($requires, $catalog, $map);
         foreach ($check['plan'] as $step) {
             // Dependencies cannot activate either side ahead of the switch.
@@ -162,30 +153,86 @@ class PluginManager extends Base
         }
     }
 
-    public function migrate(string $old, array $catalog): string
+    public function migrate(string $old, array $catalog, bool $dependenciesConfirmed = false): string
     {
         $successor = $this->prepareMigration($old, $catalog);
-        if (! $this->migrationCheck($old, $successor, $catalog)['satisfied']) {
+        $this->assertMigrationConflicts($old, $successor, $catalog);
+        $check = $this->migrationCheck($old, $successor, $catalog);
+        if ($check['blocked'] || (! $check['satisfied'] && ! $dependenciesConfirmed)) {
             throw new ModMenuException(t('"%s" has unmet requirements.', $successor));
         }
-        $this->assertMigrationConflicts($old, $successor, $catalog);
 
-        $installed = $this->installedMap();
-        $oldWasActive = $installed[$old]['status'] === 'active';
-        if ($oldWasActive) {
-            $this->disable($old, $successor);
-        }
-        if ($installed[$successor]['status'] === 'disabled') {
-            try {
-                $this->enable($successor);
-            } catch (ModMenuException $e) {
-                if ($oldWasActive && ($this->installedMap()[$successor]['status'] ?? '') !== 'active') {
-                    $this->enable($old);
+        $before = $this->installedMap();
+        $journal = [];
+        try {
+            if (! isset($before[$successor])) {
+                try {
+                    // A verified archive already in the disabled directory can stay there on failure.
+                    $this->installFromUrl($catalog[$successor]['download'], $successor, true);
+                } catch (ModMenuException $e) {
+                    throw new ModMenuException(
+                        e("Couldn't install %s, so %s stays active.", htmlspecialchars($successor), htmlspecialchars($old)) . ' ' . $e->getMessage(),
+                        0,
+                        $e
+                    );
                 }
-                throw $e;
+                $this->assertMigrationConflicts($old, $successor, $catalog);
+                $this->assertMigrationRequirements($old, $successor, $catalog, $check['plan']);
+            }
+
+            $this->resolveDependencies($check['plan'], $journal);
+            if ($check['plan'] !== []) {
+                $this->assertMigrationRequirements($old, $successor);
+                $this->assertMigrationConflicts($old, $successor, $catalog);
+            }
+
+            if ($before[$old]['status'] === 'active') {
+                $this->disable($old, $successor);
+                $journal[] = [fn () => $this->move($old, $this->disabledDir(), $this->activeDir()), null];
+            }
+            if (($before[$successor]['status'] ?? 'disabled') === 'disabled') {
+                $this->enable($successor);
+            }
+        } catch (\Throwable $e) {
+            $errors = [$e->getMessage()];
+            foreach (array_reverse($journal) as [$undo]) {
+                try {
+                    $undo();
+                } catch (\Throwable $rollbackError) {
+                    $errors[] = $rollbackError->getMessage();
+                }
+            }
+            $message = count($errors) === 1
+                ? e("Couldn't migrate %s to %s, so nothing changed.", htmlspecialchars($old), htmlspecialchars($successor))
+                : e("Couldn't fully roll back the migration from %s to %s.", htmlspecialchars($old), htmlspecialchars($successor));
+            throw new ModMenuException($message . ' ' . implode(' ', $errors), 0, $e);
+        }
+
+        foreach ($journal as [, $finish]) {
+            if ($finish !== null) {
+                $finish();
             }
         }
         return $successor;
+    }
+
+    /** Check the installed metadata against the state the confirmed plan would produce. */
+    private function assertMigrationRequirements(string $old, string $successor, array $catalog = [], array $plan = []): void
+    {
+        $map = $this->installedMap();
+        $map[$old]['status'] = 'disabled';
+        foreach ($plan as $step) {
+            $name = $step['plugin'];
+            if ($step['action'] !== 'enable') {
+                $map[$name] = $catalog[$name] ?? [];
+            }
+            $map[$name]['status'] = 'active';
+        }
+        $requires = $this->installedPluginsDeps()[$successor]['requires'] ?? [];
+        $resolver = new DependencyResolver($this->container);
+        if (! $resolver->resolveForward($requires, 'requires', $map, [])['satisfied']) {
+            throw new ModMenuException(t('"%s" has unmet requirements.', $successor));
+        }
     }
 
     public function uninstall(string $name): void
@@ -212,10 +259,15 @@ class PluginManager extends Base
      */
     public function installFromUrl(string $url, ?string $expectedName = null, bool $installDisabled = false): string
     {
+        return $this->downloadAndInstall($url, $expectedName, $installDisabled);
+    }
+
+    private function downloadAndInstall(string $url, ?string $expectedName, bool $installDisabled, ?array &$journal = null): string
+    {
         $tmp = ($this->archiveDownloader ??= new ArchiveDownloader())->download($url);
 
         try {
-            return $this->installArchive($tmp, $expectedName, $installDisabled);
+            return $this->installArchive($tmp, $expectedName, $installDisabled, $journal);
         } finally {
             @unlink($tmp);
         }
@@ -243,7 +295,7 @@ class PluginManager extends Base
      * install. ModMenu itself must be newer than the installed copy, and keeps
      * its previous copy until the new version has loaded (Plugin::initialize).
      */
-    private function installArchive(string $zipPath, ?string $expectedName = null, bool $installDisabled = false): string
+    private function installArchive(string $zipPath, ?string $expectedName = null, bool $installDisabled = false, ?array &$journal = null): string
     {
         $archive = new PluginArchive($this->container);
         $name = $archive->inspect($zipPath);
@@ -280,25 +332,61 @@ class PluginManager extends Base
             }
 
             $swap = new PluginSwap($destination);
+            if ($journal !== null && file_exists($swap->previousDir($name))) {
+                throw new ModMenuException(t('The previous copy of "%s" is still pending. Finish that update first.', $name));
+            }
             $staging = $swap->createStaging();
             try {
                 $this->stageArchive($archive, $zipPath, $staging);
                 $staged = $staging . '/' . $name;
                 $isSelf = $name === self::SELF;
-                $swap->verify($staged, $name, $isSelf ? $this->installedVersion(self::SELF) : null);
+                $version = $swap->verify($staged, $name, $isSelf ? $this->installedVersion(self::SELF) : null);
                 $this->assertInstallDestinations($name, $installDisabled);
                 if ($installDisabled) {
                     if (! @rename($staged, $destination . '/' . $name)) {
                         throw new ModMenuException(t('Could not move the new %s into place.', $name));
                     }
                 } else {
-                    $swap->swap($staged, $name, $isSelf);
+                    if ($journal !== null && ! is_dir($destination . '/' . $name)) {
+                        throw new ModMenuException(t('Plugin "%s" was not found.', $name));
+                    }
+                    $swap->swap($staged, $name, $isSelf || $journal !== null);
+                    if ($journal !== null) {
+                        // Keep the install lock until the migration commits or restores the previous copy.
+                        $journal[] = [
+                            function () use ($swap, $name, $lock): void {
+                                try {
+                                    // The original still owns the plugin name on rollback.
+                                    $parked = $this->disabledDir() . '/.modmenu-migration-' . bin2hex(random_bytes(8));
+                                    $this->move($name, $this->activeDir(), $parked);
+                                } finally {
+                                    try {
+                                        $swap->rollback($name);
+                                    } finally {
+                                        fclose($lock);
+                                    }
+                                }
+                            },
+                            static function () use ($swap, $name, $version, $isSelf, $lock): void {
+                                try {
+                                    if (! $isSelf) {
+                                        $swap->finalize($name, $version);
+                                    }
+                                } finally {
+                                    fclose($lock);
+                                }
+                            },
+                        ];
+                        $lock = null;
+                    }
                 }
             } finally {
                 PluginSwap::removeTree($staging);
             }
         } finally {
-            fclose($lock);
+            if ($lock !== null) {
+                fclose($lock);
+            }
         }
 
         return $name;
@@ -354,19 +442,26 @@ class PluginManager extends Base
             return;
         }
 
-        // rename() fails with EXDEV when $src and $dst are on different
-        // filesystems — the norm in Docker, where plugins/ (image layer) and
-        // data/ (a volume) are separate mounts. Fall back to a recursive copy
-        // followed by removing the source, so enable/disable works across the
-        // plugins/data filesystem boundary.
-        if ($this->copyTree($src, $dst)) {
-            if ($this->removeTree($src)) {
-                return;
+        // Across filesystems, stage the copy first. Move the source aside
+        // atomically before publishing, so a failed move cannot delete part
+        // of the original or leave both copies visible to the plugin manager.
+        $staging = (new PluginSwap($to))->createStaging();
+        $staged = $staging . '/' . $name;
+        $aside = $from . '/.modmenu-move-' . bin2hex(random_bytes(8));
+        try {
+            if ($this->copyTree($src, $staged) && @rename($src, $aside)) {
+                if (! file_exists($dst) && ! is_link($dst) && @rename($staged, $dst)) {
+                    PluginSwap::removeTree($aside);
+                    return;
+                }
+                if (! @rename($aside, $src)) {
+                    throw new ModMenuException(t('Could not restore "%s". Its original folder is at %s.', $name, $aside));
+                }
             }
-            throw new ModMenuException(t('Moved "%s" but could not remove the original. Its folder may be a bind mount or read-only.', $name));
+        } finally {
+            PluginSwap::removeTree($staging);
         }
 
-        $this->removeTree($dst); // clean up any partial copy
         throw new ModMenuException(t('Could not move "%s". Its folder may be a bind mount or read-only.', $name));
     }
 
@@ -719,7 +814,7 @@ class PluginManager extends Base
         }
     }
 
-    public function resolveDependencies(array $plan): void
+    public function resolveDependencies(array $plan, ?array &$journal = null): void
     {
         foreach ($plan as $step) {
             if (($step['action'] ?? '') === 'unresolvable') {
@@ -727,13 +822,29 @@ class PluginManager extends Base
             }
         }
         foreach ($plan as $step) {
+            $name = $step['plugin'];
             switch ($step['action']) {
-                case 'enable':
-                    $this->enable($step['plugin']);
-                    break;
                 case 'install':
+                    if ($journal === null) {
+                        $this->installFromUrl((string) $step['download'], $name);
+                        break;
+                    }
+                    $this->installFromUrl((string) $step['download'], $name, true);
+                    // Activate the verified disabled copy, just like an existing dependency.
+                    // Fall through.
+                case 'enable':
+                    $this->enable($name);
+                    if ($journal !== null) {
+                        // Undo only our own activation, regardless of current dependency checks.
+                        $journal[] = [fn () => $this->move($name, $this->activeDir(), $this->disabledDir()), null];
+                    }
+                    break;
                 case 'update':
-                    $this->installFromUrl((string) $step['download'], (string) $step['plugin']);
+                    if ($journal === null) {
+                        $this->installFromUrl((string) $step['download'], $name);
+                    } else {
+                        $this->downloadAndInstall((string) $step['download'], $name, false, $journal);
+                    }
                     break;
             }
         }

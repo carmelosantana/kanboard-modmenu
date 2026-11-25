@@ -188,19 +188,19 @@ class ModMenuController extends BaseController
             if ($check['blocked']) {
                 throw new ModMenuException(t('"%s" has requirements that cannot be installed automatically. Install them manually first.', $successor));
             }
-            if (! $check['satisfied'] && $this->postValue('action') !== 'migrate') {
+            $dependenciesConfirmed = $this->postValue('action') === 'migrate';
+            if (! $check['satisfied'] && ! $dependenciesConfirmed) {
                 $this->response->html($this->helper->layout->config('ModMenu:plugin/migrate', [
                     'title' => t('ModMenu'),
                     'name' => $name,
                     'successor' => $successor,
-                    'install' => false,
+                    'install' => ! isset($manager->installedMap()[$successor]),
                     'plan' => $check['plan'],
                 ]));
                 return;
             }
 
-            $manager->resolveDependencies($check['plan']);
-            $successor = $manager->migrate($name, $catalog);
+            $successor = $manager->migrate($name, $catalog, $dependenciesConfirmed);
             $this->flash->success(t('Migrated %s to %s. %s stays installed but disabled.', $name, $successor, $name));
         } catch (ModMenuException $e) {
             $this->flash->failure($e->getMessage());

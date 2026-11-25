@@ -176,7 +176,7 @@ class ControllerFlowTest extends Base
             ->willThrowException(new ModMenuException('Unable to download the plugin archive.'));
         $manager->setArchiveDownloader($downloader);
 
-        $this->assertMigrationFailure($manager, "Couldn't install Harbor, so ShadcnTheme stays active.", [
+        $this->assertMigrationFailure($manager, "Couldn't migrate ShadcnTheme to Harbor, so nothing changed. Couldn't install Harbor, so ShadcnTheme stays active. Unable to download the plugin archive.", [
             'Harbor' => ['download' => 'https://x/harbor.zip'],
         ]);
     }
@@ -265,6 +265,101 @@ class ControllerFlowTest extends Base
 
         $this->assertSame(['failure' => 'Harbor conflicts with OtherTheme. Disable them first.'], $this->flashes);
         $this->assertSame($before, $manager->installedMap());
+    }
+
+    public function testMissingSuccessorPreflightLeavesBothDirectoriesUntouched()
+    {
+        $manager = $this->migrationFixture();
+        $root = $this->migrationFixtureRoot;
+        mkdir($root . '/disabled/Foundation', 0755, true);
+        file_put_contents($root . '/disabled/Foundation/Plugin.php', '<?php');
+        mkdir($root . '/active/OtherTheme');
+        file_put_contents($root . '/active/OtherTheme/Plugin.php', '<?php');
+        $snapshot = static fn () => [scandir($root . '/active'), scandir($root . '/disabled')];
+        $before = $snapshot();
+
+        $zipPath = $root . '/harbor.zip';
+        $zip = new ZipArchive();
+        $zip->open($zipPath, ZipArchive::CREATE);
+        $zip->addFromString('Harbor/Plugin.php', "<?php\n" . 'namespace Kanboard\\Plugin\\Harbor;');
+        $zip->close();
+        $downloads = [];
+        $downloader = $this->createMock(ArchiveDownloader::class);
+        $downloader->method('download')->willReturnCallback(function ($url) use (&$downloads, $zipPath, $root) {
+            $downloads[] = $url;
+            $copy = tempnam($root, 'download-');
+            copy($zipPath, $copy);
+            return $copy;
+        });
+        $manager->setArchiveDownloader($downloader);
+
+        $entry = [
+            'download' => 'https://x/harbor.zip',
+            'requires' => [['plugin' => 'Foundation']],
+            'replaces' => ['ShadcnTheme'],
+        ];
+        $this->post(['name' => 'ShadcnTheme']);
+        $this->controller($manager, ['Harbor' => $entry])->runMigrate();
+        $this->assertSame($before, $snapshot());
+        $this->assertCount(1, $this->bodies);
+        foreach (['Resolve dependencies', 'Enable Foundation', 'Install Harbor', 'Cancel'] as $text) {
+            $this->assertStringContainsString($text, $this->bodies[0]);
+        }
+
+        // Cancel navigates to the Installed tab.
+        $this->container['request'] = new Request($this->container, ['REQUEST_METHOD' => 'GET'], []);
+        $this->controller($manager, ['Harbor' => $entry])->show();
+        $this->assertSame($before, $snapshot());
+
+        $blocked = array_replace($entry, ['requires' => [['plugin' => 'Unavailable']]]);
+        $cases = [
+            [$blocked, t('"%s" has requirements that cannot be installed automatically. Install them manually first.', 'Harbor')],
+            [$entry + ['conflicts' => ['OtherTheme']], 'Harbor conflicts with OtherTheme. Disable them first.'],
+            [array_replace($entry, ['replaces' => ['OtherTheme']]), 'Harbor conflicts with OtherTheme. Disable them first.'],
+        ];
+        foreach ($cases as [$catalogEntry, $message]) {
+            $this->post(['name' => 'ShadcnTheme']);
+            $this->controller($manager, ['Harbor' => $catalogEntry])->runMigrate();
+            $this->assertSame(['failure' => $message], $this->flashes);
+            $this->assertSame($before, $snapshot());
+        }
+        $this->assertSame([], $downloads);
+    }
+
+    public function testResolveMigrationRejectsGetAndMissingCsrf()
+    {
+        $manager = $this->migrationFixture('Harbor', []);
+        $before = $manager->installedMap();
+        foreach ([['GET', 'good'], ['POST', '']] as [$method, $token]) {
+            $this->container['request'] = new Request($this->container, ['REQUEST_METHOD' => $method], [], [
+                'name' => 'ShadcnTheme', 'action' => 'migrate', 'csrf_token' => $token,
+            ]);
+            try {
+                $this->controller($manager)->resolve();
+                $this->fail('Expected request to be rejected.');
+            } catch (AccessForbiddenException $e) {
+                $this->assertSame($before, $manager->installedMap());
+            }
+        }
+    }
+
+    public function testRunMigrateShowsUnderlyingMoveErrorAfterRollback()
+    {
+        $manager = $this->migrationFixture('Harbor', ['requires' => [['plugin' => 'Foundation']]]);
+        $root = $this->migrationFixtureRoot;
+        mkdir($root . '/disabled/Foundation');
+        file_put_contents($root . '/disabled/Foundation/Plugin.php', '<?php');
+        // A non-plugin file prevents the old folder being moved.
+        file_put_contents($root . '/disabled/ShadcnTheme', 'keep');
+        $before = $manager->installedMap();
+
+        $this->post(['name' => 'ShadcnTheme', 'action' => 'migrate']);
+        $this->controller($manager)->resolve();
+
+        $this->assertSame(['failure' => "Couldn't migrate ShadcnTheme to Harbor, so nothing changed. " .
+            t('A copy of "%s" already exists at the destination.', 'ShadcnTheme')], $this->flashes);
+        $this->assertSame($before, $manager->installedMap());
+        $this->assertSame('keep', file_get_contents($root . '/disabled/ShadcnTheme'));
     }
 
     // ── Installed tab: requirement states ─────────────────────────────────

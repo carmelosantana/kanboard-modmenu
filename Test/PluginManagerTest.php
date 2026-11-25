@@ -625,13 +625,13 @@ class PluginManagerTest extends Base
     }
     // ── staged, verified installs (PluginSwap) ─────────────────────────────
 
-    private function makeZip(string $name, string $version, ?string $pluginPhp = null): string
+    private function makeZip(string $name, string $version, ?string $pluginPhp = null, array $metadata = []): string
     {
         $zipPath = $this->root . '/' . $name . '-' . $version . '-' . uniqid() . '.zip';
         $zip = new ZipArchive();
         $zip->open($zipPath, ZipArchive::CREATE);
         $zip->addFromString("$name/Plugin.php", $pluginPhp ?? "<?php\nnamespace Kanboard\\Plugin\\$name;\n");
-        $zip->addFromString("$name/plugin.json", json_encode(['name' => $name, 'version' => $version]));
+        $zip->addFromString("$name/plugin.json", json_encode(['name' => $name, 'version' => $version] + $metadata));
         $zip->close();
         return $zipPath;
     }
@@ -725,35 +725,182 @@ class PluginManagerTest extends Base
         $this->manager->setArchiveDownloader($downloader);
     }
 
-    public function testMigrateInstallsExpectedArchiveBeforeDisablingOldAndEnablingSuccessor()
+    public function testMigrateInstallsExpectedArchiveBeforeResolvingDependenciesAndSwitching()
     {
         $this->seedPlugin($this->active, 'ShadcnTheme', '1.3.0', ['deprecated' => ['superseded_by' => 'Harbor']]);
+        $this->seedPlugin($this->disabled, 'Foundation', '1.0.0');
         $url = 'https://x/harbor.zip';
-        $zip = $this->makeZip('Harbor', '2.0.0');
+        $metadata = ['requires' => [['plugin' => 'Foundation']]];
+        $zip = $this->makeZip('Harbor', '2.0.0', null, $metadata);
+        $events = [];
         $downloader = $this->createMock(ArchiveDownloader::class);
-        $downloader->expects($this->once())->method('download')->with($url)->willReturnCallback(function () use ($zip) {
+        $downloader->expects($this->once())->method('download')->with($url)->willReturnCallback(function () use ($zip, &$events) {
+            $events[] = 'download Harbor';
             $this->assertFileExists($this->active . '/ShadcnTheme/Plugin.php');
-            $this->assertDirectoryDoesNotExist($this->active . '/Harbor');
             return $zip;
         });
         $manager = $this->getMockBuilder(PluginManager::class)->setConstructorArgs([$this->container])
-            ->onlyMethods(['disable', 'enable', 'uninstall'])->getMock();
+            ->onlyMethods(['assertMigrationConflicts', 'disable', 'enable', 'uninstall'])->getMock();
         $manager->setDirectories($this->active, $this->disabled)->setArchiveDownloader($downloader);
         $manager->expects($this->never())->method('uninstall');
-        $manager->expects($this->once())->method('disable')->with('ShadcnTheme', 'Harbor')->willReturnCallback(function ($name, $replacement) {
-            $this->assertFileExists($this->disabled . '/Harbor/Plugin.php');
-            $this->assertDirectoryDoesNotExist($this->active . '/Harbor');
+        $manager->method('assertMigrationConflicts')->willReturnCallback(function ($old, $successor, $catalog) use (&$events) {
+            $events[] = 'check conflicts';
+            $this->manager->assertMigrationConflicts($old, $successor, $catalog);
+        });
+        $manager->expects($this->once())->method('disable')->with('ShadcnTheme', 'Harbor')->willReturnCallback(function ($name, $replacement) use (&$events) {
+            $events[] = 'disable ShadcnTheme';
+            $this->assertFileExists($this->active . '/Foundation/Plugin.php');
             $this->manager->disable($name, $replacement);
         });
-        $manager->expects($this->once())->method('enable')->with('Harbor')->willReturnCallback(function ($name) {
-            $this->assertFileExists($this->disabled . '/ShadcnTheme/Plugin.php');
-            $this->assertDirectoryDoesNotExist($this->active . '/ShadcnTheme');
+        $manager->expects($this->exactly(2))->method('enable')->willReturnCallback(function ($name) use (&$events) {
+            $events[] = 'enable ' . $name;
+            $this->assertFileExists($this->disabled . '/Harbor/Plugin.php');
             $this->manager->enable($name);
         });
 
-        $this->assertSame('Harbor', $manager->migrate('ShadcnTheme', ['Harbor' => ['download' => $url]]));
+        $this->assertSame('Harbor', $manager->migrate('ShadcnTheme', ['Harbor' => ['download' => $url] + $metadata], true));
+        $this->assertSame('check conflicts', $events[0]);
+        $this->assertSame(['download Harbor', 'enable Foundation', 'disable ShadcnTheme', 'enable Harbor'],
+            array_values(array_diff($events, ['check conflicts'])));
         $this->assertFileExists($this->active . '/Harbor/Plugin.php');
         $this->assertFileExists($this->disabled . '/ShadcnTheme/Plugin.php');
+    }
+
+    public function testMigrateRejectsUncoveredArchiveMetadataBeforeResolvingDependencies()
+    {
+        $this->seedPlugin($this->active, 'ShadcnTheme', '1.3.0', ['deprecated' => ['superseded_by' => 'Harbor']]);
+        $this->seedPlugin($this->active, 'OtherTheme', '1.0.0');
+        $this->seedPlugin($this->disabled, 'Foundation', '1.0.0');
+        $this->seedPlugin($this->disabled, 'Extra', '1.0.0');
+        $url = 'https://x/harbor.zip';
+        $requires = [['plugin' => 'Foundation']];
+        $catalog = ['Harbor' => ['download' => $url, 'requires' => $requires]];
+        foreach ([
+            ['requires' => array_merge($requires, [['plugin' => 'Extra']])],
+            ['requires' => [['plugin' => 'Foundation', 'min_version' => '2.0.0']]],
+            ['requires' => $requires, 'conflicts' => ['OtherTheme']],
+        ] as $metadata) {
+            $this->stubDownloads([$url => $this->makeZip('Harbor', '2.0.0', null, $metadata)]);
+            try {
+                $this->manager->migrate('ShadcnTheme', $catalog, true);
+                $this->fail('Expected archive metadata to stop migration.');
+            } catch (ModMenuException $e) {
+                $this->assertStringStartsWith("Couldn't migrate ShadcnTheme to Harbor, so nothing changed.", $e->getMessage());
+                $this->assertSame(['.', '..', 'OtherTheme', 'ShadcnTheme'], scandir($this->active));
+                $this->assertSame(['.', '..', 'Extra', 'Foundation', 'Harbor'], scandir($this->disabled));
+            }
+            // Start the next case with a missing successor again.
+            $this->rrmdir($this->disabled . '/Harbor');
+        }
+    }
+
+    public function testMigrateRestoresActivePluginsAfterEachFailedStep()
+    {
+        foreach (['install Harbor', 'enable Second', 'disable ShadcnTheme', 'enable Harbor'] as $failure) {
+            $this->seedPlugin($this->active, 'ShadcnTheme', '1.3.0', ['deprecated' => ['superseded_by' => 'Harbor']]);
+            $this->seedPlugin($this->active, 'Untouched', '1.0.0');
+            $this->seedPlugin($this->disabled, 'Second', '1.0.0');
+            $requires = [['plugin' => 'First'], ['plugin' => 'Second']];
+            $harbor = $this->makeZip('Harbor', '2.0.0', null, ['requires' => $requires]);
+            $first = $this->makeZip('First', '1.0.0');
+            $catalog = [
+                'Harbor' => ['download' => 'https://x/harbor.zip', 'requires' => $requires],
+                'First' => ['download' => 'https://x/first.zip', 'version' => '1.0.0'],
+            ];
+            $downloader = $this->createMock(ArchiveDownloader::class);
+            $downloader->method('download')->willReturnCallback(function ($url) use ($failure, $harbor, $first) {
+                if ($url === 'https://x/first.zip') {
+                    return $first;
+                }
+                if ($failure === 'install Harbor') {
+                    throw new ModMenuException($failure);
+                }
+                return $harbor;
+            });
+            $manager = $this->getMockBuilder(PluginManager::class)->setConstructorArgs([$this->container])
+                ->onlyMethods(['disable', 'enable', 'uninstall'])->getMock();
+            $manager->setDirectories($this->active, $this->disabled)->setArchiveDownloader($downloader);
+            $manager->expects($this->never())->method('uninstall');
+            $manager->method('enable')->willReturnCallback(function ($name) use ($failure) {
+                if ("enable $name" === $failure) {
+                    throw new ModMenuException($failure);
+                }
+                $this->manager->enable($name);
+            });
+            $manager->method('disable')->willReturnCallback(function ($name, $replacement = null) use ($failure) {
+                if ("disable $name" === $failure) {
+                    throw new ModMenuException($failure);
+                }
+                $this->manager->disable($name, $replacement);
+            });
+
+            $before = scandir($this->active);
+            try {
+                $manager->migrate('ShadcnTheme', $catalog, true);
+                $this->fail('Expected failure at ' . $failure);
+            } catch (ModMenuException $e) {
+                $detail = $failure === 'install Harbor' ? "Couldn't install Harbor, so ShadcnTheme stays active. " : '';
+                $this->assertSame("Couldn't migrate ShadcnTheme to Harbor, so nothing changed. " . $detail . $failure, $e->getMessage());
+                $this->assertSame($before, scandir($this->active), $failure);
+                $this->assertSame(
+                    $failure === 'install Harbor' ? ['.', '..', 'Second'] : ['.', '..', 'First', 'Harbor', 'Second'],
+                    scandir($this->disabled),
+                    $failure
+                );
+            }
+            $this->rrmdir($this->active);
+            $this->rrmdir($this->disabled);
+        }
+    }
+
+    public function testMigrateRestoresTheExistingVersionOfAnUpdatedDependency()
+    {
+        $this->seedPlugin($this->active, 'ShadcnTheme', '1.3.0', ['deprecated' => ['superseded_by' => 'Harbor']]);
+        $this->seedPlugin($this->disabled, 'Harbor', '2.0.0', [
+            'requires' => [['plugin' => 'Foundation', 'min_version' => '2.0.0']],
+        ]);
+        $this->seedPlugin($this->active, 'Foundation', '1.0.0');
+        $this->stubDownloads(['https://x/foundation.zip' => $this->makeZip('Foundation', '2.0.0')]);
+        file_put_contents($this->disabled . '/ShadcnTheme', 'keep');
+        $before = $this->manager->installedMap();
+
+        try {
+            $this->manager->migrate('ShadcnTheme', [
+                'Foundation' => ['download' => 'https://x/foundation.zip', 'version' => '2.0.0'],
+            ], true);
+            $this->fail('Expected disable to fail.');
+        } catch (ModMenuException $e) {
+            $this->assertStringContainsString(t('A copy of "%s" already exists at the destination.', 'ShadcnTheme'), $e->getMessage());
+            $this->assertSame($before, $this->manager->installedMap());
+            $this->assertSame(['.', '..', 'Foundation', 'ShadcnTheme'], scandir($this->active));
+            $parked = glob($this->disabled . '/.*/Foundation/plugin.json');
+            $this->assertCount(1, $parked);
+            $this->assertStringContainsString('2.0.0', file_get_contents($parked[0]));
+        }
+    }
+
+    public function testMigratePreservesTheOriginalWhenTheSourceCannotBeMoved()
+    {
+        $this->seedPlugin($this->active, 'ShadcnTheme', '1.3.0', ['deprecated' => ['superseded_by' => 'Harbor']]);
+        $this->seedPlugin($this->disabled, 'Harbor', '2.0.0');
+        $before = $this->manager->installedMap();
+        chmod($this->active, 0555);
+        try {
+            if (is_writable($this->active)) {
+                $this->markTestSkipped('The test user can write to read-only directories.');
+            }
+
+            try {
+                $this->manager->migrate('ShadcnTheme', []);
+                $this->fail('Expected disable to fail.');
+            } catch (ModMenuException $e) {
+                $this->assertStringStartsWith("Couldn't migrate ShadcnTheme to Harbor, so nothing changed.", $e->getMessage());
+                $this->assertSame($before, $this->manager->installedMap());
+                $this->assertSame(['.', '..', 'Harbor'], scandir($this->disabled));
+            }
+        } finally {
+            chmod($this->active, 0755);
+        }
     }
 
     public function testMigrateKeepsActiveDependentsWorkingThroughTheSuccessorAlias()
@@ -781,7 +928,8 @@ class PluginManagerTest extends Base
             $this->manager->migrate('ShadcnTheme', ['Harbor' => ['download' => $url]]);
             $this->fail('Expected install to fail.');
         } catch (ModMenuException $e) {
-            $this->assertSame("Couldn't install Harbor, so ShadcnTheme stays active.", $e->getMessage());
+            $this->assertSame("Couldn't migrate ShadcnTheme to Harbor, so nothing changed. Couldn't install Harbor, so ShadcnTheme stays active. " .
+                t('The archive for "%s" contains "%s". Nothing was installed.', 'Harbor', 'Other'), $e->getMessage());
             $this->assertSame(['ShadcnTheme'], array_keys($this->manager->installedMap()));
             $this->assertFileExists($this->active . '/ShadcnTheme/Plugin.php');
         }
