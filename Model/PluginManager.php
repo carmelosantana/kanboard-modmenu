@@ -237,8 +237,8 @@ class PluginManager extends Base
     // ── internals ──────────────────────────────────────────────────────────
 
     /**
-     * Validate the archive, extract it to a staging dir inside the plugins dir,
-     * verify the staged copy, then swap it into place. If an ACTIVE plugin of
+     * Validate the archive, then stage, verify and move it under a per-plugin
+     * lock shared by active and disabled installs. If an ACTIVE plugin of
      * the same name exists it is replaced (update path). A DISABLED copy blocks
      * install. ModMenu itself must be newer than the installed copy, and keeps
      * its previous copy until the new version has loaded (Plugin::initialize).
@@ -254,42 +254,73 @@ class PluginManager extends Base
             throw new ModMenuException(t('The archive for "%s" contains "%s". Nothing was installed.', $expectedName, $name));
         }
 
-        if (is_dir($this->disabledDir() . '/' . $name)) {
-            throw new ModMenuException(t('"%s" is already installed but disabled. Enable it instead.', $name));
+        // Keep the file in the data directory so overlapping requests always
+        // lock the same inode, even after a previous install closes its handle.
+        $lockPath = dirname($this->disabledDir()) . '/.modmenu-install-' . hash('sha256', $name) . '.lock';
+        $lock = @fopen($lockPath, 'c');
+        if ($lock === false) {
+            throw new ModMenuException(t('Could not lock "%s" for installation.', $name));
         }
 
-        $destination = $this->activeDir();
-        if ($installDisabled) {
-            $this->guardSelf($name);
-            if (file_exists($destination . '/' . $name)) {
-                throw new ModMenuException(t('"%s" is already installed.', $name));
-            }
-            $destination = $this->disabledDir();
-            if (! is_dir($destination) && ! @mkdir($destination, 0755, true) && ! is_dir($destination)) {
-                throw new ModMenuException(t('Could not create the target directory.'));
-            }
-        }
-
-        $swap = new PluginSwap($destination);
-        $staging = $swap->createStaging();
         try {
-            $archive->extractTo($zipPath, $staging);
-            $staged = $staging . '/' . $name;
-            $isSelf = $name === self::SELF;
-            $swap->verify($staged, $name, $isSelf ? $this->installedVersion(self::SELF) : null);
+            if (! @flock($lock, LOCK_EX | LOCK_NB, $wouldBlock)) {
+                throw new ModMenuException($wouldBlock
+                    ? t('"%s" is already installed.', $name)
+                    : t('Could not lock "%s" for installation.', $name));
+            }
+
+            $this->assertInstallDestinations($name, $installDisabled);
+            $destination = $this->activeDir();
             if ($installDisabled) {
-                // A fresh disabled install must never replace a copy placed by another request.
-                if (! @rename($staged, $destination . '/' . $name)) {
-                    throw new ModMenuException(t('Could not move the new %s into place.', $name));
+                $this->guardSelf($name);
+                $destination = $this->disabledDir();
+                if (! is_dir($destination) && ! @mkdir($destination, 0755, true) && ! is_dir($destination)) {
+                    throw new ModMenuException(t('Could not create the target directory.'));
                 }
-            } else {
-                $swap->swap($staged, $name, $isSelf);
+            }
+
+            $swap = new PluginSwap($destination);
+            $staging = $swap->createStaging();
+            try {
+                $this->stageArchive($archive, $zipPath, $staging);
+                $staged = $staging . '/' . $name;
+                $isSelf = $name === self::SELF;
+                $swap->verify($staged, $name, $isSelf ? $this->installedVersion(self::SELF) : null);
+                $this->assertInstallDestinations($name, $installDisabled);
+                if ($installDisabled) {
+                    if (! @rename($staged, $destination . '/' . $name)) {
+                        throw new ModMenuException(t('Could not move the new %s into place.', $name));
+                    }
+                } else {
+                    $swap->swap($staged, $name, $isSelf);
+                }
+            } finally {
+                PluginSwap::removeTree($staging);
             }
         } finally {
-            PluginSwap::removeTree($staging);
+            fclose($lock);
         }
 
         return $name;
+    }
+
+    protected function stageArchive(PluginArchive $archive, string $zipPath, string $staging): void
+    {
+        $archive->extractTo($zipPath, $staging);
+    }
+
+    private function assertInstallDestinations(string $name, bool $installDisabled): void
+    {
+        clearstatcache(true);
+        $disabled = $this->disabledDir() . '/' . $name;
+        if (file_exists($disabled) || is_link($disabled)) {
+            throw new ModMenuException(t('"%s" is already installed but disabled. Enable it instead.', $name));
+        }
+
+        $active = $this->activeDir() . '/' . $name;
+        if ($installDisabled && (file_exists($active) || is_link($active))) {
+            throw new ModMenuException(t('"%s" is already installed.', $name));
+        }
     }
 
     /** True while ModMenu's previous copy waits for the new version to load. */

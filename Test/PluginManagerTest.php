@@ -4,6 +4,7 @@ require_once 'tests/units/Base.php';
 
 use KanboardTests\units\Base;
 use Kanboard\Plugin\ModMenu\Model\ArchiveDownloader;
+use Kanboard\Plugin\ModMenu\Model\PluginArchive;
 use Kanboard\Plugin\ModMenu\Model\PluginManager;
 use Kanboard\Plugin\ModMenu\Exception\ModMenuException;
 
@@ -868,6 +869,91 @@ class PluginManagerTest extends Base
         $this->assertDirectoryExists("{$this->disabled}/OtherTheme");
         $this->assertDirectoryExists("{$this->disabled}/ThirdTheme");
         $this->assertDirectoryExists("{$this->active}/Bystander");
+    }
+
+    // ── concurrent installs ───────────────────────────────────────────────
+
+    private function openHarborInstallLock()
+    {
+        $lock = fopen($this->root . '/.modmenu-install-' . hash('sha256', 'Harbor') . '.lock', 'c');
+        $this->assertIsResource($lock);
+        return $lock;
+    }
+
+    public function testDisabledInstallRefusesToProceedWhilePluginLockIsHeld()
+    {
+        $url = 'https://x/harbor.zip';
+        $this->stubDownloads([$url => $this->makeZip('Harbor', '2.0.0')]);
+        $lock = $this->openHarborInstallLock();
+
+        try {
+            $this->assertTrue(flock($lock, LOCK_EX | LOCK_NB));
+            try {
+                $this->manager->installFromUrl($url, 'Harbor', true);
+                $this->fail('Expected the competing install to be refused.');
+            } catch (ModMenuException $e) {
+                $this->assertSame('"Harbor" is already installed.', html_entity_decode($e->getMessage(), ENT_QUOTES));
+            }
+            $this->assertDirectoryDoesNotExist($this->disabled . '/Harbor');
+        } finally {
+            fclose($lock);
+        }
+
+        $this->assertSame('Harbor', $this->manager->installFromUrl($url, 'Harbor', true));
+        $this->assertFileExists($this->disabled . '/Harbor/Plugin.php');
+    }
+
+    /** @dataProvider destinationsOccupiedDuringStaging */
+    public function testInstallRechecksDestinationsAfterStaging(bool $installDisabled, string $occupied, string $message)
+    {
+        $url = 'https://x/harbor.zip';
+        $zip = $this->makeZip('Harbor', '2.0.0');
+        $downloader = $this->createMock(ArchiveDownloader::class);
+        $downloader->method('download')->willReturn($zip);
+        $existing = $occupied === 'active' ? $this->active : $this->disabled;
+        $other = $occupied === 'active' ? $this->disabled : $this->active;
+        $afterStaging = function () use ($existing): void {
+            $lock = $this->openHarborInstallLock();
+            try {
+                $this->assertFalse(flock($lock, LOCK_EX | LOCK_NB, $wouldBlock));
+                $this->assertSame(1, $wouldBlock);
+                $this->seedPlugin($existing, 'Harbor', '1.0.0');
+            } finally {
+                fclose($lock);
+            }
+        };
+        $manager = new class ($this->container, $afterStaging) extends PluginManager {
+            public function __construct(\Pimple\Container $container, private \Closure $afterStaging)
+            {
+                parent::__construct($container);
+            }
+
+            protected function stageArchive(PluginArchive $archive, string $zipPath, string $staging): void
+            {
+                parent::stageArchive($archive, $zipPath, $staging);
+                ($this->afterStaging)();
+            }
+        };
+        $manager->setDirectories($this->active, $this->disabled)->setArchiveDownloader($downloader);
+
+        try {
+            $manager->installFromUrl($url, 'Harbor', $installDisabled);
+            $this->fail('Expected the newly occupied destination to block the install.');
+        } catch (ModMenuException $e) {
+            $this->assertSame($message, html_entity_decode($e->getMessage(), ENT_QUOTES));
+        }
+        $this->assertDirectoryDoesNotExist($other . '/Harbor');
+        $this->assertStringContainsString('1.0.0', file_get_contents($existing . '/Harbor/plugin.json'));
+    }
+
+    public static function destinationsOccupiedDuringStaging(): array
+    {
+        $disabledMessage = '"Harbor" is already installed but disabled. Enable it instead.';
+        return [
+            'active appears during a disabled install' => [true, 'active', '"Harbor" is already installed.'],
+            'disabled appears during a disabled install' => [true, 'disabled', $disabledMessage],
+            'disabled appears during an active install' => [false, 'disabled', $disabledMessage],
+        ];
     }
 
     // ── catalog name must match the archive ────────────────────────────────
