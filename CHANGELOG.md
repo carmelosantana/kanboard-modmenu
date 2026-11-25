@@ -13,6 +13,14 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Installed deprecated plugins show their successor and offer **Migrate**. ModMenu installs the successor if needed, disables the old plugin, and enables the successor. The old plugin stays installed.
 - Browse hides deprecated plugins by default. Search for the exact plugin name to find and install one.
 
+### Security and reliability
+
+- Plugin downloads only reach public HTTPS hosts and stop at the 50 MB limit while downloading.
+- Plugin downloads connect directly and no longer use Kanboard's HTTP proxy settings.
+- Concurrent installs cannot create two copies of the same plugin.
+- **Migrate** makes changes only after the migration is confirmed and restores the previous plugin state if a step fails.
+- A rolled-back dependency update may leave a hidden `.modmenu-migration-*` folder in the disabled plugins directory. This folder is safe to delete.
+
 ---
 
 ## 1.5.0 — 2026-11-20
