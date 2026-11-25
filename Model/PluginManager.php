@@ -91,12 +91,89 @@ class PluginManager extends Base
         $this->move($name, $this->disabledDir(), $this->activeDir());
     }
 
-    public function disable(string $name): void
+    public function disable(string $name, ?string $replacement = null): void
     {
         $this->guardName($name);
         $this->guardSelf($name);
-        $this->assertNoActiveDependents($name);
+        $this->assertNoActiveDependents($name, $replacement);
         $this->move($name, $this->activeDir(), $this->disabledDir());
+    }
+
+    public function migrationSuccessor(string $old): string
+    {
+        $successor = $this->installedMap()[$old]['deprecated']['superseded_by'] ?? null;
+        if ($successor === null || $successor === $old) {
+            throw new ModMenuException(t('%s has no successor to migrate to.', $old));
+        }
+        $this->guardName($successor);
+        return $successor;
+    }
+
+    /** Install a missing successor without making it visible to the plugin loader. */
+    public function prepareMigration(string $old, array $catalog): string
+    {
+        $successor = $this->migrationSuccessor($old);
+        $this->guardSelf($old);
+        if (isset($this->installedMap()[$successor])) {
+            return $successor;
+        }
+
+        $url = $catalog[$successor]['download'] ?? '';
+        if ($url === '') {
+            throw new ModMenuException(t('%s is not in the plugin directory, so nothing changed.', $successor));
+        }
+        try {
+            $this->installFromUrl($url, $successor, true);
+        } catch (ModMenuException $e) {
+            throw new ModMenuException(e("Couldn't install %s, so %s stays active.", $successor, $old), 0, $e);
+        }
+        return $successor;
+    }
+
+    public function migrationCheck(string $old, string $successor, array $catalog): array
+    {
+        $map = $this->installedMap();
+        $map[$old]['status'] = 'disabled';
+        $requires = $this->installedPluginsDeps()[$successor]['requires'] ?? [];
+        $check = $this->forwardCheck($requires, $catalog, $map);
+        foreach ($check['plan'] as $step) {
+            // Dependencies cannot activate either side ahead of the switch.
+            if (in_array($step['plugin'], [$old, $successor], true)) {
+                $check['blocked'] = true;
+            }
+        }
+        return $check;
+    }
+
+    public function migrate(string $old, array $catalog): string
+    {
+        $successor = $this->prepareMigration($old, $catalog);
+        if (! $this->migrationCheck($old, $successor, $catalog)['satisfied']) {
+            throw new ModMenuException(t('"%s" has unmet requirements.', $successor));
+        }
+
+        $entry = $catalog[$successor] ?? [];
+        $conflicts = array_diff($this->activeConflicts($successor, $entry['conflicts'] ?? [], $entry['replaces'] ?? []), [$old]);
+        if ($conflicts !== []) {
+            throw new ModMenuException(t('%s conflicts with %s. Disable them first.', $successor, implode(', ', $conflicts)));
+        }
+
+        $installed = $this->installedMap();
+        $oldWasActive = $installed[$old]['status'] === 'active';
+        if ($oldWasActive) {
+            $this->disable($old, $successor);
+        }
+        if ($installed[$successor]['status'] === 'disabled') {
+            try {
+                $this->enable($successor);
+            } catch (ModMenuException $e) {
+                if ($oldWasActive && ($this->installedMap()[$successor]['status'] ?? '') !== 'active') {
+                    $this->enable($old);
+                }
+                throw $e;
+            }
+        }
+        return $successor;
     }
 
     public function uninstall(string $name): void
@@ -121,7 +198,7 @@ class PluginManager extends Base
      * Download and install a plugin archive. When $expectedName is given (a
      * catalog entry's name), the archive's top-level folder must match it.
      */
-    public function installFromUrl(string $url, ?string $expectedName = null): string
+    public function installFromUrl(string $url, ?string $expectedName = null, bool $installDisabled = false): string
     {
         if (! preg_match('#^https://#i', $url) || filter_var($url, FILTER_VALIDATE_URL) === false) {
             throw new ModMenuException(t('The download URL must be a valid https:// URL.'));
@@ -136,7 +213,7 @@ class PluginManager extends Base
         file_put_contents($tmp, $body);
 
         try {
-            return $this->installArchive($tmp, $expectedName);
+            return $this->installArchive($tmp, $expectedName, $installDisabled);
         } finally {
             @unlink($tmp);
         }
@@ -164,7 +241,7 @@ class PluginManager extends Base
      * install. ModMenu itself must be newer than the installed copy, and keeps
      * its previous copy until the new version has loaded (Plugin::initialize).
      */
-    private function installArchive(string $zipPath, ?string $expectedName = null): string
+    private function installArchive(string $zipPath, ?string $expectedName = null, bool $installDisabled = false): string
     {
         $archive = new PluginArchive($this->container);
         $name = $archive->inspect($zipPath);
@@ -179,14 +256,33 @@ class PluginManager extends Base
             throw new ModMenuException(t('"%s" is already installed but disabled. Enable it instead.', $name));
         }
 
-        $swap = new PluginSwap($this->activeDir());
+        $destination = $this->activeDir();
+        if ($installDisabled) {
+            $this->guardSelf($name);
+            if (file_exists($destination . '/' . $name)) {
+                throw new ModMenuException(t('"%s" is already installed.', $name));
+            }
+            $destination = $this->disabledDir();
+            if (! is_dir($destination) && ! @mkdir($destination, 0755, true) && ! is_dir($destination)) {
+                throw new ModMenuException(t('Could not create the target directory.'));
+            }
+        }
+
+        $swap = new PluginSwap($destination);
         $staging = $swap->createStaging();
         try {
             $archive->extractTo($zipPath, $staging);
             $staged = $staging . '/' . $name;
             $isSelf = $name === self::SELF;
             $swap->verify($staged, $name, $isSelf ? $this->installedVersion(self::SELF) : null);
-            $swap->swap($staged, $name, $isSelf);
+            if ($installDisabled) {
+                // A fresh disabled install must never replace a copy placed by another request.
+                if (! @rename($staged, $destination . '/' . $name)) {
+                    throw new ModMenuException(t('Could not move the new %s into place.', $name));
+                }
+            } else {
+                $swap->swap($staged, $name, $isSelf);
+            }
         } finally {
             PluginSwap::removeTree($staging);
         }
@@ -524,10 +620,24 @@ class PluginManager extends Base
         return array_values(array_filter($all, static fn ($d) => $d['status'] !== 'satisfied'));
     }
 
-    private function assertNoActiveDependents(string $name): void
+    private function assertNoActiveDependents(string $name, ?string $replacement = null): void
     {
+        $map = $this->installedMap();
+        $deps = $this->installedPluginsDeps();
+        if ($replacement !== null && isset($map[$replacement])
+            && ($map[$name]['deprecated']['superseded_by'] ?? null) === $replacement) {
+            // Preserve dependencies that the verified replacement will satisfy after the switch.
+            $after = $map;
+            $after[$name]['status'] = 'disabled';
+            $after[$replacement]['status'] = 'active';
+            foreach ($deps as &$plugin) {
+                $plugin['requires'] = array_filter($plugin['requires'],
+                    static fn ($dep) => ! DependencyResolver::isSatisfied($dep, $after));
+            }
+            unset($plugin);
+        }
         $resolver = new DependencyResolver($this->container);
-        $blockers = $resolver->resolveReverse($name, $this->installedPluginsDeps(), $this->installedMap());
+        $blockers = $resolver->resolveReverse($name, $deps, $map);
         if ($blockers !== []) {
             $names = implode(', ', array_map(static fn ($b) => $b['plugin'], $blockers));
             throw new ModMenuException(t('"%s" is required by: %s. Disable or remove those first.', $name, $names));
@@ -539,10 +649,10 @@ class PluginManager extends Base
      * satisfied=true → act directly. Otherwise 'plan' is the deps-first closure;
      * 'blocked'=true when a required dep cannot be auto-resolved.
      */
-    public function forwardCheck(array $requires, array $catalog): array
+    public function forwardCheck(array $requires, array $catalog, ?array $installedMap = null): array
     {
         $resolver = new DependencyResolver($this->container);
-        $map = $this->installedMap();
+        $map = $installedMap ?? $this->installedMap();
         $forward = $resolver->resolveForward($requires, 'requires', $map, $catalog);
         if ($forward['satisfied']) {
             return ['satisfied' => true, 'plan' => [], 'blocked' => false, 'requires' => $forward['deps']];
@@ -568,6 +678,16 @@ class PluginManager extends Base
      */
     public function resolveAndActivate(string $name, string $action, string $target, array $plan): void
     {
+        $this->resolveDependencies($plan);
+        if ($action === 'install') {
+            $this->installFromUrl($target, $name);
+        } else {
+            $this->enable($name);
+        }
+    }
+
+    public function resolveDependencies(array $plan): void
+    {
         foreach ($plan as $step) {
             if (($step['action'] ?? '') === 'unresolvable') {
                 throw new ModMenuException(t('"%s" cannot be resolved automatically. Install it manually first.', $step['plugin'] ?? '?'));
@@ -583,11 +703,6 @@ class PluginManager extends Base
                     $this->installFromUrl((string) $step['download'], (string) $step['plugin']);
                     break;
             }
-        }
-        if ($action === 'install') {
-            $this->installFromUrl($target, $name);
-        } else {
-            $this->enable($name);
         }
     }
 

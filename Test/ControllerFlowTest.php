@@ -86,6 +86,160 @@ class ControllerFlowTest extends Base
         return $this->createMock(PluginManager::class);
     }
 
+    private function migrationFixture(?string $successor = 'Harbor', ?array $harbor = null): PluginManager
+    {
+        $root = sys_get_temp_dir() . '/modmenu-migrate-' . bin2hex(random_bytes(8));
+        $this->migrationFixtureRoot = $root;
+        mkdir($root . '/active/ShadcnTheme', 0755, true);
+        file_put_contents($root . '/active/ShadcnTheme/Plugin.php', '<?php');
+        file_put_contents($root . '/active/ShadcnTheme/plugin.json', json_encode([
+            'deprecated' => ['superseded_by' => $successor],
+        ]));
+        if ($harbor !== null) {
+            mkdir($root . '/disabled/Harbor', 0755, true);
+            file_put_contents($root . '/disabled/Harbor/Plugin.php', '<?php');
+            file_put_contents($root . '/disabled/Harbor/plugin.json', json_encode($harbor));
+        }
+        return (new PluginManager($this->container))->setDirectories($root . '/active', $root . '/disabled');
+    }
+
+    private ?string $migrationFixtureRoot = null;
+
+    public function tearDown(): void
+    {
+        if ($this->migrationFixtureRoot !== null) {
+            \Kanboard\Plugin\ModMenu\Model\PluginSwap::removeTree($this->migrationFixtureRoot);
+        }
+        parent::tearDown();
+    }
+
+    public function testMigrateShowsInstallDisableAndEnableSteps()
+    {
+        $this->assertMigrationConfirmation(null, true);
+    }
+
+    public function testMigrateOmitsInstallStepForInstalledSuccessor()
+    {
+        $this->assertMigrationConfirmation([], false);
+    }
+
+    private function assertMigrationConfirmation(?array $harbor, bool $showInstall): void
+    {
+        $manager = $this->migrationFixture('Harbor', $harbor);
+        $this->container['request'] = new Request($this->container, ['REQUEST_METHOD' => 'GET'], ['name' => 'ShadcnTheme']);
+        $this->controller($manager)->migrate();
+
+        $this->assertCount(1, $this->bodies);
+        $body = $this->bodies[0];
+        foreach (['Migrate ShadcnTheme to Harbor?', 'Disable ShadcnTheme', 'Enable Harbor',
+            'ShadcnTheme stays installed but disabled. Remove it later if you like.', 'runMigrate', 'Cancel'] as $text) {
+            $this->assertStringContainsString($text, $body);
+        }
+        $this->assertSame($showInstall, str_contains($body, 'Install Harbor'));
+    }
+
+    public function testRunMigrateWithoutCsrfChangesNothing()
+    {
+        $manager = $this->migrationFixture('Harbor', []);
+        $this->container['request'] = new Request($this->container, ['REQUEST_METHOD' => 'POST'], [], ['name' => 'ShadcnTheme']);
+        $before = $manager->installedMap();
+        try {
+            $this->controller($manager)->runMigrate();
+            $this->fail('Expected CSRF rejection.');
+        } catch (AccessForbiddenException $e) {
+            $this->assertSame($before, $manager->installedMap());
+        }
+    }
+
+    public function testRunMigrateRejectsGetWithValidToken()
+    {
+        $manager = $this->migrationFixture('Harbor', []);
+        $this->container['request'] = new Request($this->container, ['REQUEST_METHOD' => 'GET'], [], [
+            'name' => 'ShadcnTheme', 'csrf_token' => 'good',
+        ]);
+        $before = $manager->installedMap();
+        try {
+            $this->controller($manager)->runMigrate();
+            $this->fail('Expected GET rejection.');
+        } catch (AccessForbiddenException $e) {
+            $this->assertSame($before, $manager->installedMap());
+        }
+    }
+
+    public function testRunMigrateKeepsOldPluginActiveWhenInstallFails()
+    {
+        $manager = $this->migrationFixture();
+        $client = $this->createMock(\Kanboard\Core\Http\Client::class);
+        $client->expects($this->once())->method('get')->with('https://x/harbor.zip')->willReturn('');
+        $this->container['httpClient'] = $client;
+
+        $this->assertMigrationFailure($manager, "Couldn't install Harbor, so ShadcnTheme stays active.", [
+            'Harbor' => ['download' => 'https://x/harbor.zip'],
+        ]);
+    }
+
+    public function testRunMigrateWithoutSuccessorChangesNothing()
+    {
+        $this->assertMigrationFailure($this->migrationFixture(null), 'ShadcnTheme has no successor to migrate to.');
+    }
+
+    public function testRunMigrateRejectsSelfReference()
+    {
+        $this->assertMigrationFailure($this->migrationFixture('ShadcnTheme'), 'ShadcnTheme has no successor to migrate to.');
+    }
+
+    public function testRunMigrateWithoutCatalogEntryChangesNothing()
+    {
+        $this->assertMigrationFailure($this->migrationFixture(), 'Harbor is not in the plugin directory, so nothing changed.');
+    }
+
+    private function assertMigrationFailure(PluginManager $manager, string $message, array $catalog = []): void
+    {
+        $before = $manager->installedMap();
+        $this->post(['name' => 'ShadcnTheme']);
+        $this->controller($manager, $catalog)->runMigrate();
+
+        $this->assertSame(['failure' => $message], $this->flashes);
+        $this->assertSame($before, $manager->installedMap());
+    }
+
+    public function testRunMigrateUsesInstalledSuccessorAndRedirectsToInstalled()
+    {
+        $manager = $this->migrationFixture('Harbor', []);
+        $this->post(['name' => 'ShadcnTheme', 'successor' => 'Other', 'archive_url' => 'https://x/other.zip']);
+        $this->controller($manager)->runMigrate();
+
+        $this->assertSame(['success' => 'Migrated ShadcnTheme to Harbor. ShadcnTheme stays installed but disabled.'], $this->flashes);
+        $this->assertSame([$this->container['helper']->url->to('ModMenuController', 'show', ['plugin' => 'ModMenu'])], $this->redirects);
+        $installed = $manager->installedMap();
+        $this->assertSame('active', $installed['Harbor']['status']);
+        $this->assertSame('disabled', $installed['ShadcnTheme']['status']);
+    }
+
+    public function testRunMigratePromptsToResolveSuccessorRequirementsAndContinuesAfterConfirmation()
+    {
+        $manager = $this->migrationFixture('Harbor', ['requires' => [['plugin' => 'Foundation']]]);
+        $foundation = $this->migrationFixtureRoot . '/disabled/Foundation';
+        mkdir($foundation);
+        file_put_contents($foundation . '/Plugin.php', '<?php');
+        $before = $manager->installedMap();
+        $this->post(['name' => 'ShadcnTheme']);
+        $this->controller($manager)->runMigrate();
+
+        $this->assertCount(1, $this->bodies);
+        $this->assertStringContainsString('Resolve dependencies', $this->bodies[0]);
+        $this->assertStringContainsString('Enable Foundation', $this->bodies[0]);
+        $this->assertSame($before, $manager->installedMap());
+
+        $this->post(['name' => 'ShadcnTheme', 'action' => 'migrate']);
+        $this->controller($manager)->resolve();
+
+        $installed = $manager->installedMap();
+        $this->assertSame('active', $installed['Foundation']['status']);
+        $this->assertSame('active', $installed['Harbor']['status']);
+        $this->assertSame('disabled', $installed['ShadcnTheme']['status']);
+    }
+
     // ── Installed tab: requirement states ─────────────────────────────────
 
     public function testInstalledTabShowsAMetRequirementAsAGreenCheck()

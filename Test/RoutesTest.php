@@ -25,6 +25,8 @@ class RoutesTest extends Base
             ['config/modmenu/source/add', 'ModMenuController', 'addSource'],
             ['config/modmenu/source/remove', 'ModMenuController', 'removeSource'],
             ['config/modmenu/plugin/confirm', 'ModMenuController', 'confirm'],
+            ['config/modmenu/plugin/migrate', 'ModMenuController', 'migrate'],
+            ['config/modmenu/plugin/migrate/run', 'ModMenuController', 'runMigrate'],
             ['config/modmenu/plugin/resolve', 'ModMenuController', 'resolve'],
             ['config/modmenu/plugin/enable', 'ModMenuController', 'enable'],
             ['config/modmenu/plugin/disable', 'ModMenuController', 'disable'],

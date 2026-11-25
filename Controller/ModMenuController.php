@@ -145,6 +145,66 @@ class ModMenuController extends BaseController
         ]));
     }
 
+    public function migrate()
+    {
+        $this->requireAdmin();
+        $name = $this->request->getStringParam('name');
+        $manager = $this->manager();
+        try {
+            $successor = $manager->migrationSuccessor($name);
+        } catch (ModMenuException $e) {
+            $this->flash->failure($e->getMessage());
+            $this->backToInstalled();
+            return;
+        }
+
+        $this->response->html($this->helper->layout->config('ModMenu:plugin/migrate', [
+            'title' => t('ModMenu'),
+            'name' => $name,
+            'successor' => $successor,
+            'install' => ! isset($manager->installedMap()[$successor]),
+            'plan' => [],
+        ]));
+    }
+
+    public function runMigrate()
+    {
+        $this->requireAdmin();
+        if (! $this->request->isPost()) {
+            throw new AccessForbiddenException();
+        }
+        $this->checkCSRFForm();
+        $name = $this->postValue('name');
+        $manager = $this->manager();
+
+        try {
+            $manager->migrationSuccessor($name);
+            $catalog = $this->catalog();
+            $successor = $manager->prepareMigration($name, $catalog);
+            $check = $manager->migrationCheck($name, $successor, $catalog);
+            if ($check['blocked']) {
+                throw new ModMenuException(t('"%s" has requirements that cannot be installed automatically. Install them manually first.', $successor));
+            }
+            if (! $check['satisfied'] && $this->postValue('action') !== 'migrate') {
+                $this->response->html($this->helper->layout->config('ModMenu:plugin/migrate', [
+                    'title' => t('ModMenu'),
+                    'name' => $name,
+                    'successor' => $successor,
+                    'install' => false,
+                    'plan' => $check['plan'],
+                ]));
+                return;
+            }
+
+            $manager->resolveDependencies($check['plan']);
+            $successor = $manager->migrate($name, $catalog);
+            $this->flash->success(t('Migrated %s to %s. %s stays installed but disabled.', $name, $successor, $name));
+        } catch (ModMenuException $e) {
+            $this->flash->failure($e->getMessage());
+        }
+        $this->backToInstalled();
+    }
+
     public function enable()
     {
         $this->requireAdmin();
@@ -272,6 +332,10 @@ class ModMenuController extends BaseController
     public function resolve()
     {
         $this->requireAdmin();
+        if ($this->request->getRawValue('action') === 'migrate') {
+            $this->runMigrate();
+            return;
+        }
         $this->checkCSRFForm();
         $name   = $this->postValue('name');
         $action = $this->postValue('action') === 'install' ? 'install' : 'enable';

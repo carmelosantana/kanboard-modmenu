@@ -38,6 +38,18 @@ class ControllerAccessTest extends Base
         (new \Kanboard\Plugin\ModMenu\Controller\UploadController($this->container))->upload();
     }
 
+    public function testMigrateForbiddenForNonAdmin()
+    {
+        $this->expectException(AccessForbiddenException::class);
+        $this->nonAdminController()->migrate();
+    }
+
+    public function testRunMigrateForbiddenForNonAdmin()
+    {
+        $this->expectException(AccessForbiddenException::class);
+        $this->nonAdminController()->runMigrate();
+    }
+
     public function testResolveForbiddenForNonAdmin()
     {
         $this->expectException(AccessForbiddenException::class);

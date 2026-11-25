@@ -63,6 +63,8 @@ class Plugin extends Base
         $this->route->addRoute('config/modmenu/source/add', 'ModMenuController', 'addSource', 'ModMenu');
         $this->route->addRoute('config/modmenu/source/remove', 'ModMenuController', 'removeSource', 'ModMenu');
         $this->route->addRoute('config/modmenu/plugin/confirm', 'ModMenuController', 'confirm', 'ModMenu');
+        $this->route->addRoute('config/modmenu/plugin/migrate', 'ModMenuController', 'migrate', 'ModMenu');
+        $this->route->addRoute('config/modmenu/plugin/migrate/run', 'ModMenuController', 'runMigrate', 'ModMenu');
         $this->route->addRoute('config/modmenu/plugin/resolve', 'ModMenuController', 'resolve', 'ModMenu');
         $this->route->addRoute('config/modmenu/plugin/enable', 'ModMenuController', 'enable', 'ModMenu');
         $this->route->addRoute('config/modmenu/plugin/disable', 'ModMenuController', 'disable', 'ModMenu');
