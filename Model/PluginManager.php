@@ -30,6 +30,9 @@ class PluginManager extends Base
 
     private array $catalog = [];
 
+    /** @var array<string, resource>|null Locks owned by an in-progress migration. */
+    private ?array $migrationLocks = null;
+
     private function activeDir(): string
     {
         return $this->activeDir ?? PLUGINS_DIR;
@@ -104,15 +107,17 @@ class PluginManager extends Base
         // guardSelf() is intentionally omitted: ModMenu is always active and can
         // never be in the disabled dir, so re-enabling it is impossible in practice
         // and harmless in theory — no protection is needed here.
-        $this->move($name, $this->disabledDir(), $this->activeDir());
+        $this->withPluginLock($name, fn () => $this->move($name, $this->disabledDir(), $this->activeDir()));
     }
 
     public function disable(string $name, ?string $replacement = null): void
     {
         $this->guardName($name);
         $this->guardSelf($name);
-        $this->assertNoActiveDependents($name, $replacement);
-        $this->move($name, $this->activeDir(), $this->disabledDir());
+        $this->withPluginLock($name, function () use ($name, $replacement): void {
+            $this->assertNoActiveDependents($name, $replacement);
+            $this->move($name, $this->activeDir(), $this->disabledDir());
+        });
     }
 
     public function migrationSuccessor(string $old): string
@@ -163,7 +168,23 @@ class PluginManager extends Base
 
     public function migrate(string $old, array $catalog, bool $dependenciesConfirmed = false): string
     {
-        $successor = $this->prepareMigration($old, $catalog);
+        $this->migrationLocks = [];
+        try {
+            $this->acquirePluginLock($old);
+            $successor = $this->prepareMigration($old, $catalog);
+            $this->acquirePluginLock($successor);
+            $this->runMigration($old, $successor, $catalog, $dependenciesConfirmed);
+            return $successor;
+        } finally {
+            foreach ($this->migrationLocks as $lock) {
+                fclose($lock);
+            }
+            $this->migrationLocks = null;
+        }
+    }
+
+    private function runMigration(string $old, string $successor, array $catalog, bool $dependenciesConfirmed): void
+    {
         $this->assertMigrationConflicts($old, $successor, $catalog);
         $check = $this->migrationCheck($old, $successor, $catalog);
         if ($check['blocked'] || (! $check['satisfied'] && ! $dependenciesConfirmed)) {
@@ -174,10 +195,18 @@ class PluginManager extends Base
         $before = $this->installedMap();
         $journal = [];
         try {
+            $disabled = $this->disabledDir();
+            if (! is_dir($disabled) && @mkdir($disabled, 0755, true)) {
+                $journal[] = [static function () use ($disabled): void {
+                    // A different plugin operation may now be using this directory.
+                    if (scandir($disabled) === ['.', '..'] && ! @rmdir($disabled)) {
+                        throw new ModMenuException(t('Could not remove the target directory.'));
+                    }
+                }, null];
+            }
             if (! isset($before[$successor])) {
                 try {
-                    // A verified archive already in the disabled directory can stay there on failure.
-                    $this->installFromUrl($catalog[$successor]['download'], $successor, true);
+                    $this->installForMigration($catalog[$successor]['download'], $successor, $journal);
                 } catch (ModMenuException $e) {
                     throw new ModMenuException(
                         e("Couldn't install %s, so %s stays active.", htmlspecialchars($successor), htmlspecialchars($old)) . ' ' . $e->getMessage(),
@@ -222,7 +251,25 @@ class PluginManager extends Base
                 $finish();
             }
         }
-        return $successor;
+    }
+
+    private function installForMigration(string $url, string $name, array &$journal, bool $activate = false): void
+    {
+        $this->downloadAndInstall($url, $name, true);
+        $disabled = $this->disabledDir();
+        $path = $disabled . '/' . $name;
+        $activated = false;
+        $journal[] = [function () use ($name, $disabled, $path, &$activated): void {
+            if ($activated) {
+                $this->move($name, $this->activeDir(), $disabled);
+            }
+            $this->removePluginCopy($name, $path);
+        }, null];
+
+        if ($activate) {
+            $this->enable($name);
+            $activated = true;
+        }
     }
 
     /** Check the installed metadata against the state the confirmed plan would produce. */
@@ -248,18 +295,24 @@ class PluginManager extends Base
     {
         $this->guardName($name);
         $this->guardSelf($name);
-        $this->assertNoActiveDependents($name);
-
-        foreach ([$this->activeDir(), $this->disabledDir()] as $base) {
-            $path = $base . '/' . $name;
-            if (is_dir($path)) {
-                if (! $this->removeTree($path)) {
-                    throw new ModMenuException(t('Could not remove "%s". Its folder may be a bind mount or read-only.', $name));
+        $this->withPluginLock($name, function () use ($name): void {
+            $this->assertNoActiveDependents($name);
+            foreach ([$this->activeDir(), $this->disabledDir()] as $base) {
+                $path = $base . '/' . $name;
+                if (is_dir($path)) {
+                    $this->removePluginCopy($name, $path);
+                    return;
                 }
-                return;
             }
+            throw new ModMenuException(t('Plugin "%s" is not installed.', $name));
+        });
+    }
+
+    private function removePluginCopy(string $name, string $path): void
+    {
+        if (! $this->removeTree($path)) {
+            throw new ModMenuException(t('Could not remove "%s". Its folder may be a bind mount or read-only.', $name));
         }
-        throw new ModMenuException(t('Plugin "%s" is not installed.', $name));
     }
 
     /**
@@ -331,21 +384,8 @@ class PluginManager extends Base
             throw new ModMenuException(t('The archive for "%s" contains "%s". Nothing was installed.', $expectedName, $name));
         }
 
-        // Keep the file in the data directory so overlapping requests always
-        // lock the same inode, even after a previous install closes its handle.
-        $lockPath = dirname($this->disabledDir()) . '/.modmenu-install-' . hash('sha256', $name) . '.lock';
-        $lock = @fopen($lockPath, 'c');
-        if ($lock === false) {
-            throw new ModMenuException(t('Could not lock "%s" for installation.', $name));
-        }
-
+        $lock = $this->acquirePluginLock($name);
         try {
-            if (! @flock($lock, LOCK_EX | LOCK_NB, $wouldBlock)) {
-                throw new ModMenuException($wouldBlock
-                    ? t('"%s" is already installed.', $name)
-                    : t('Could not lock "%s" for installation.', $name));
-            }
-
             $this->assertInstallDestinations($name, $installDisabled);
             $destination = $this->activeDir();
             if ($installDisabled) {
@@ -357,7 +397,8 @@ class PluginManager extends Base
             }
 
             $swap = new PluginSwap($destination);
-            if ($journal !== null && file_exists($swap->previousDir($name))) {
+            $previous = $swap->previousDir($name);
+            if ($journal !== null && (file_exists($previous) || is_link($previous))) {
                 throw new ModMenuException(t('The previous copy of "%s" is still pending. Finish that update first.', $name));
             }
             $staging = $swap->createStaging();
@@ -377,32 +418,10 @@ class PluginManager extends Base
                     }
                     $swap->swap($staged, $name, $isSelf || $journal !== null);
                     if ($journal !== null) {
-                        // Keep the install lock until the migration commits or restores the previous copy.
                         $journal[] = [
-                            function () use ($swap, $name, $lock): void {
-                                try {
-                                    // The original still owns the plugin name on rollback.
-                                    $parked = $this->disabledDir() . '/.modmenu-migration-' . bin2hex(random_bytes(8));
-                                    $this->move($name, $this->activeDir(), $parked);
-                                } finally {
-                                    try {
-                                        $swap->rollback($name);
-                                    } finally {
-                                        fclose($lock);
-                                    }
-                                }
-                            },
-                            static function () use ($swap, $name, $version, $isSelf, $lock): void {
-                                try {
-                                    if (! $isSelf) {
-                                        $swap->finalize($name, $version);
-                                    }
-                                } finally {
-                                    fclose($lock);
-                                }
-                            },
+                            fn () => $this->rollbackMigrationUpdate($name, $previous),
+                            $isSelf ? null : static fn () => $swap->finalize($name, $version),
                         ];
-                        $lock = null;
                     }
                 }
             } finally {
@@ -415,6 +434,68 @@ class PluginManager extends Base
         }
 
         return $name;
+    }
+
+    private function rollbackMigrationUpdate(string $name, string $previous): void
+    {
+        $parked = $this->disabledDir() . '/.modmenu-migration-' . bin2hex(random_bytes(8));
+        if (! @mkdir($parked, 0755)) {
+            throw new ModMenuException(t('Could not create the target directory.'));
+        }
+        try {
+            $this->move($name, $this->activeDir(), $parked);
+        } catch (\Throwable $e) {
+            @rmdir($parked);
+            throw $e;
+        }
+
+        $target = $this->activeDir() . '/' . $name;
+        if (! @rename($previous, $target)) {
+            throw new ModMenuException(t('Could not restore the previous version of %s.', $name));
+        }
+        PluginSwap::invalidateOpcache($target);
+        $this->removePluginCopy($name, $parked);
+    }
+
+    private function withPluginLock(string $name, callable $operation): void
+    {
+        $lock = $this->acquirePluginLock($name);
+        try {
+            $operation();
+        } finally {
+            if ($lock !== null) {
+                fclose($lock);
+            }
+        }
+    }
+
+    /** @return resource|null A handle to close, or null when the migration owns it. */
+    private function acquirePluginLock(string $name)
+    {
+        $this->guardName($name);
+        if (isset($this->migrationLocks[$name])) {
+            return null;
+        }
+        // Keep the file in the data directory so overlapping requests always
+        // lock the same inode, even after a previous install closes its handle.
+        $lockPath = dirname($this->disabledDir()) . '/.modmenu-install-' . hash('sha256', $name) . '.lock';
+        $lock = @fopen($lockPath, 'c');
+        if ($lock === false) {
+            throw new ModMenuException(t('Could not lock "%s" for installation.', $name));
+        }
+
+        if (! @flock($lock, LOCK_EX | LOCK_NB, $wouldBlock)) {
+            fclose($lock);
+            throw new ModMenuException($wouldBlock
+                ? t('"%s" is already installed.', $name)
+                : t('Could not lock "%s" for installation.', $name));
+        }
+
+        if ($this->migrationLocks !== null) {
+            $this->migrationLocks[$name] = $lock;
+            return null;
+        }
+        return $lock;
     }
 
     protected function stageArchive(PluginArchive $archive, string $zipPath, string $staging): void
@@ -855,9 +936,8 @@ class PluginManager extends Base
                         $this->installFromUrl((string) $step['download'], $name);
                         break;
                     }
-                    $this->installFromUrl((string) $step['download'], $name, true);
-                    // Activate the verified disabled copy, just like an existing dependency.
-                    // Fall through.
+                    $this->installForMigration((string) $step['download'], $name, $journal, true);
+                    break;
                 case 'enable':
                     $this->enable($name);
                     if ($journal !== null) {
@@ -890,18 +970,8 @@ class PluginManager extends Base
         }
     }
 
-    private function removeTree(string $dir): bool
+    protected function removeTree(string $dir): bool
     {
-        if (! is_dir($dir)) { return true; }
-        foreach (scandir($dir) as $f) {
-            if ($f === '.' || $f === '..') { continue; }
-            $p = $dir . '/' . $f;
-            if (is_dir($p)) {
-                if (! $this->removeTree($p)) { return false; }
-            } elseif (! @unlink($p)) {
-                return false;
-            }
-        }
-        return @rmdir($dir);
+        return PluginSwap::removeTree($dir);
     }
 }

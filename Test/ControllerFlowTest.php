@@ -362,6 +362,53 @@ class ControllerFlowTest extends Base
         $this->assertSame('keep', file_get_contents($root . '/disabled/ShadcnTheme'));
     }
 
+    public function testRunMigrateReportsIncompleteRollbackWhenRemovalFails(): void
+    {
+        $manager = new class ($this->container) extends PluginManager {
+            public bool $removalAttempted = false;
+
+            public function enable(string $name): void
+            {
+                if ($name === 'Harbor') {
+                    throw new ModMenuException('enable Harbor');
+                }
+                parent::enable($name);
+            }
+
+            protected function removeTree(string $path): bool
+            {
+                if (basename($path) !== 'Foundation') {
+                    return parent::removeTree($path);
+                }
+                $this->removalAttempted = true;
+                return false;
+            }
+        };
+        $this->migrationFixture('Harbor', ['requires' => [['plugin' => 'Foundation']]], $manager);
+        $root = $this->migrationFixtureRoot;
+        $zipPath = $root . '/foundation.zip';
+        $zip = new ZipArchive();
+        $zip->open($zipPath, ZipArchive::CREATE);
+        $zip->addFromString('Foundation/Plugin.php', "<?php\n" . 'namespace Kanboard\Plugin\Foundation;');
+        $zip->close();
+        $downloader = $this->createMock(ArchiveDownloader::class);
+        $downloader->method('download')->willReturn($zipPath);
+        $manager->setArchiveDownloader($downloader);
+        $activeBefore = scandir($root . '/active');
+
+        $this->post(['name' => 'ShadcnTheme', 'action' => 'migrate']);
+        $this->controller($manager, [
+            'Foundation' => ['download' => 'https://x/foundation.zip'],
+        ])->resolve();
+
+        $this->assertStringStartsWith("Couldn't fully roll back the migration from ShadcnTheme to Harbor.", $this->flashes['failure']);
+        $this->assertStringContainsString('enable Harbor', $this->flashes['failure']);
+        $this->assertTrue($manager->removalAttempted);
+        $this->assertSame($activeBefore, scandir($root . '/active'));
+        $this->assertSame('disabled', $manager->installedMap()['Foundation']['status']);
+        $this->assertDirectoryExists($root . '/disabled/Harbor');
+    }
+
     // ── Installed tab: requirement states ─────────────────────────────────
 
     public function testInstalledTabShowsAMetRequirementAsAGreenCheck()

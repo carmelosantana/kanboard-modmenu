@@ -19,7 +19,6 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Plugin downloads connect directly and no longer use Kanboard's HTTP proxy settings.
 - Concurrent installs cannot create two copies of the same plugin.
 - **Migrate** makes changes only after the migration is confirmed and restores the previous plugin state if a step fails.
-- A rolled-back dependency update may leave a hidden `.modmenu-migration-*` folder in the disabled plugins directory. This folder is safe to delete.
 
 ---
 
