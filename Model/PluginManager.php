@@ -26,6 +26,8 @@ class PluginManager extends Base
     /** @var string */
     private $disabledDir;
 
+    private ?ArchiveDownloader $archiveDownloader = null;
+
     private function activeDir(): string
     {
         return $this->activeDir ?? PLUGINS_DIR;
@@ -40,6 +42,12 @@ class PluginManager extends Base
     {
         $this->activeDir = $activeDir;
         $this->disabledDir = $disabledDir;
+        return $this;
+    }
+
+    public function setArchiveDownloader(ArchiveDownloader $downloader): self
+    {
+        $this->archiveDownloader = $downloader;
         return $this;
     }
 
@@ -204,17 +212,7 @@ class PluginManager extends Base
      */
     public function installFromUrl(string $url, ?string $expectedName = null, bool $installDisabled = false): string
     {
-        if (! preg_match('#^https://#i', $url) || filter_var($url, FILTER_VALIDATE_URL) === false) {
-            throw new ModMenuException(t('The download URL must be a valid https:// URL.'));
-        }
-
-        $body = $this->httpClient->get($url);
-        if (empty($body)) {
-            throw new ModMenuException(t('Unable to download the plugin archive.'));
-        }
-
-        $tmp = tempnam(sys_get_temp_dir(), 'modmenu_dl');
-        file_put_contents($tmp, $body);
+        $tmp = ($this->archiveDownloader ??= new ArchiveDownloader())->download($url);
 
         try {
             return $this->installArchive($tmp, $expectedName, $installDisabled);

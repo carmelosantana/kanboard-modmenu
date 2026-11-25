@@ -4,6 +4,8 @@ require_once 'tests/units/Base.php';
 
 use KanboardTests\units\Base;
 use Kanboard\Plugin\ModMenu\Controller\ModMenuController;
+use Kanboard\Plugin\ModMenu\Exception\ModMenuException;
+use Kanboard\Plugin\ModMenu\Model\ArchiveDownloader;
 use Kanboard\Plugin\ModMenu\Model\PluginManager;
 use Kanboard\Core\Http\Request;
 use Kanboard\Core\Controller\AccessForbiddenException;
@@ -169,9 +171,10 @@ class ControllerFlowTest extends Base
     public function testRunMigrateKeepsOldPluginActiveWhenInstallFails()
     {
         $manager = $this->migrationFixture();
-        $client = $this->createMock(\Kanboard\Core\Http\Client::class);
-        $client->expects($this->once())->method('get')->with('https://x/harbor.zip')->willReturn('');
-        $this->container['httpClient'] = $client;
+        $downloader = $this->createMock(ArchiveDownloader::class);
+        $downloader->expects($this->once())->method('download')->with('https://x/harbor.zip')
+            ->willThrowException(new ModMenuException('Unable to download the plugin archive.'));
+        $manager->setArchiveDownloader($downloader);
 
         $this->assertMigrationFailure($manager, "Couldn't install Harbor, so ShadcnTheme stays active.", [
             'Harbor' => ['download' => 'https://x/harbor.zip'],

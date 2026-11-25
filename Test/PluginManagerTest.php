@@ -3,6 +3,7 @@
 require_once 'tests/units/Base.php';
 
 use KanboardTests\units\Base;
+use Kanboard\Plugin\ModMenu\Model\ArchiveDownloader;
 use Kanboard\Plugin\ModMenu\Model\PluginManager;
 use Kanboard\Plugin\ModMenu\Exception\ModMenuException;
 
@@ -220,7 +221,6 @@ class PluginManagerTest extends Base
     public function testInstallFromUrlRejectsPlainHttp()
     {
         // Security: plain http:// must be rejected before any network call is made.
-        // The regex '#^https://#i' catches this immediately so no HTTP/zip fixture needed.
         $this->expectException(ModMenuException::class);
         $this->manager->installFromUrl('http://example.com/plugin.zip');
     }
@@ -709,16 +709,19 @@ class PluginManagerTest extends Base
 
     // ── update all ─────────────────────────────────────────────────────────
 
-    /** Point the manager's HTTP client at a url => zip-bytes map ('' = download failure). */
+    /** Give each successful download its own disposable copy of the fixture. */
     private function stubDownloads(array $urlToZipPath): void
     {
-        $client = $this->getMockBuilder(\Kanboard\Core\Http\Client::class)
-            ->setConstructorArgs([$this->container])->onlyMethods(['get'])->getMock();
-        $client->method('get')->willReturnCallback(
-            fn (string $url) => isset($urlToZipPath[$url]) && $urlToZipPath[$url] !== '' ? file_get_contents($urlToZipPath[$url]) : ''
-        );
-        $this->container['httpClient'] = $client;
-        $this->manager = (new PluginManager($this->container))->setDirectories($this->active, $this->disabled);
+        $downloader = $this->createMock(ArchiveDownloader::class);
+        $downloader->method('download')->willReturnCallback(function (string $url) use ($urlToZipPath): string {
+            if (empty($urlToZipPath[$url])) {
+                throw new ModMenuException('Unable to download the plugin archive.');
+            }
+            $path = tempnam($this->root, 'download-');
+            copy($urlToZipPath[$url], $path);
+            return $path;
+        });
+        $this->manager->setArchiveDownloader($downloader);
     }
 
     public function testMigrateInstallsExpectedArchiveBeforeDisablingOldAndEnablingSuccessor()
@@ -726,16 +729,15 @@ class PluginManagerTest extends Base
         $this->seedPlugin($this->active, 'ShadcnTheme', '1.3.0', ['deprecated' => ['superseded_by' => 'Harbor']]);
         $url = 'https://x/harbor.zip';
         $zip = $this->makeZip('Harbor', '2.0.0');
-        $client = $this->createMock(\Kanboard\Core\Http\Client::class);
-        $client->expects($this->once())->method('get')->with($url)->willReturnCallback(function () use ($zip) {
+        $downloader = $this->createMock(ArchiveDownloader::class);
+        $downloader->expects($this->once())->method('download')->with($url)->willReturnCallback(function () use ($zip) {
             $this->assertFileExists($this->active . '/ShadcnTheme/Plugin.php');
             $this->assertDirectoryDoesNotExist($this->active . '/Harbor');
-            return file_get_contents($zip);
+            return $zip;
         });
-        $this->container['httpClient'] = $client;
         $manager = $this->getMockBuilder(PluginManager::class)->setConstructorArgs([$this->container])
             ->onlyMethods(['disable', 'enable', 'uninstall'])->getMock();
-        $manager->setDirectories($this->active, $this->disabled);
+        $manager->setDirectories($this->active, $this->disabled)->setArchiveDownloader($downloader);
         $manager->expects($this->never())->method('uninstall');
         $manager->expects($this->once())->method('disable')->with('ShadcnTheme', 'Harbor')->willReturnCallback(function ($name, $replacement) {
             $this->assertFileExists($this->disabled . '/Harbor/Plugin.php');
@@ -885,10 +887,39 @@ class PluginManagerTest extends Base
         $this->assertSame([], $this->dotDirs('.modmenu-'));
     }
 
-    public function testInstallFromUrlAcceptsMatchingName()
+    public function testInstallFromUrlAcceptsMatchingNameAndRemovesDownloadedFile()
     {
-        $this->stubDownloads(['https://x/alpha.zip' => $this->makeZip('Alpha', '1.0.0')]);
-        $this->assertSame('Alpha', $this->manager->installFromUrl('https://x/alpha.zip', 'Alpha'));
+        $client = $this->createMock(\Kanboard\Core\Http\Client::class);
+        $client->expects($this->never())->method('get');
+        $this->container['httpClient'] = $client;
+        $url = 'https://x/alpha.zip';
+        $path = $this->makeZip('Alpha', '1.0.0');
+        $downloader = $this->createMock(ArchiveDownloader::class);
+        $downloader->expects($this->once())->method('download')->with($url)->willReturn($path);
+        $this->manager->setArchiveDownloader($downloader);
+
+        $this->assertSame('Alpha', $this->manager->installFromUrl($url, 'Alpha'));
+        $this->assertFileDoesNotExist($path);
+    }
+
+    public function testDownloaderFailureLeavesNothingInstalled()
+    {
+        $client = $this->createMock(\Kanboard\Core\Http\Client::class);
+        $client->expects($this->never())->method('get');
+        $this->container['httpClient'] = $client;
+        $url = 'https://x/alpha.zip';
+        $downloader = $this->createMock(ArchiveDownloader::class);
+        $downloader->expects($this->once())->method('download')->with($url)
+            ->willThrowException(new ModMenuException('The plugin archive is larger than 50 MB.'));
+        $this->manager->setArchiveDownloader($downloader);
+
+        try {
+            $this->manager->installFromUrl($url, 'Alpha');
+            $this->fail('Expected the downloader error.');
+        } catch (ModMenuException $e) {
+            $this->assertSame('The plugin archive is larger than 50 MB.', $e->getMessage());
+        }
+        $this->assertSame([], $this->manager->listInstalled());
     }
 
     public function testUpdateAllRefusesArchiveWhoseFolderDiffersFromCatalogName()
