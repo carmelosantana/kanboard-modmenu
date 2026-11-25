@@ -40,6 +40,28 @@ class ArchiveDownloaderTest extends TestCase
         }
     }
 
+    public function testIpv4FallbackIsCheckedAlongsideDnsIpv6Answers(): void
+    {
+        $resolve = (new ReflectionMethod(ArchiveDownloader::class, 'resolveHost'))->getClosure();
+        $downloader = new ArchiveDownloader(
+            fn ($host) => $resolve(
+                $host,
+                function ($name, $types) {
+                    $this->assertSame('downloads.example.', $name);
+                    $this->assertSame(DNS_A | DNS_AAAA, $types);
+                    return [['ipv6' => '2606:50c0:8000::153']];
+                },
+                function ($name) {
+                    $this->assertSame('downloads.example', $name);
+                    return ['140.82.112.3', '127.0.0.1'];
+                }
+            ),
+            fn () => $this->fail('A private fallback address must block the download.')
+        );
+
+        $this->assertRefused($downloader, 'The download was refused: downloads.example is not a public address.');
+    }
+
     public function testEachRedirectHopIsResolvedAndPinned(): void
     {
         $resolved = [];
@@ -49,17 +71,17 @@ class ArchiveDownloaderTest extends TestCase
                 $resolved[] = $host;
                 return [$addresses[$host]];
             },
-            function ($url, $address, $length, $write) use (&$resolved) {
+            function ($url, $address, $header, $write) use (&$resolved) {
                 if ($url === 'https://downloads.example/plugin.zip') {
                     $this->assertSame(['downloads.example'], $resolved);
                     $this->assertSame('140.82.112.3', $address);
-                    $write('redirect body');
+                    $write(null, 'redirect body');
                     return [302, 'https://assets.example/plugin.zip'];
                 }
                 $this->assertSame(['downloads.example', 'assets.example'], $resolved);
                 $this->assertSame('https://assets.example/plugin.zip', $url);
                 $this->assertSame('2606:50c0:8000::153', $address);
-                $write('archive');
+                $write(null, 'archive');
                 return [200, null];
             }
         );
@@ -112,11 +134,12 @@ class ArchiveDownloaderTest extends TestCase
         $before = $this->tempFiles();
         $downloader = new ArchiveDownloader(
             fn () => ['140.82.112.3'],
-            function ($url, $address, $length) use ($before) {
+            function ($url, $address, $header) use ($before) {
                 $path = $this->newTempFile($before);
+                $line = 'Content-Length: ' . (PluginArchive::MAX_ARCHIVE_BYTES + 1) . "\r\n";
+                $this->assertSame(0, $header(null, $line));
                 $this->assertSame(0, filesize($path));
-                $length((string) (PluginArchive::MAX_ARCHIVE_BYTES + 1));
-                $this->fail('An oversized Content-Length must abort before body delivery.');
+                return [0, null];
             }
         );
 
@@ -130,17 +153,17 @@ class ArchiveDownloaderTest extends TestCase
         foreach ([false, true] as $oversized) {
             $downloader = new ArchiveDownloader(
                 fn () => ['140.82.112.3'],
-                function ($url, $address, $length, $write) use ($before, $oversized) {
+                function ($url, $address, $header, $write) use ($before, $oversized) {
                     $path = $this->newTempFile($before);
                     $chunk = str_repeat('x', 1024 * 1024);
                     for ($bytes = 0; $bytes < PluginArchive::MAX_ARCHIVE_BYTES; $bytes += strlen($chunk)) {
-                        $write($chunk);
+                        $this->assertSame(strlen($chunk), $write(null, $chunk));
                     }
                     clearstatcache(true, $path);
                     $this->assertSame(PluginArchive::MAX_ARCHIVE_BYTES, filesize($path));
                     if ($oversized) {
-                        $write('x');
-                        $this->fail('The over-cap byte must abort the transfer.');
+                        $this->assertSame(0, $write(null, 'x'));
+                        return [0, null];
                     }
                     return [200, null];
                 }

@@ -16,12 +16,13 @@ class ArchiveDownloader
 
     /**
      * @param callable(string): string[]|null $resolver Resolves all A and AAAA addresses.
-     * @param callable|null $transport Receives URL, pinned IP, length and write callbacks.
-     *                                 Returns [status, absolute redirect URL or null].
+     * @param callable|null $transport Receives URL, pinned IP, and curl header and write callbacks.
+     *                                 Returns [status, absolute redirect URL or null], with status 0 on transfer failure.
      */
     public function __construct(?callable $resolver = null, ?callable $transport = null)
     {
-        $this->resolver = Closure::fromCallable($resolver ?? self::resolve(...));
+        $this->resolver = Closure::fromCallable($resolver ?? static fn (string $host): array =>
+            self::resolveHost($host, \dns_get_record(...), \gethostbynamel(...)));
         $this->transport = $transport === null ? null : Closure::fromCallable($transport);
     }
 
@@ -72,25 +73,36 @@ class ArchiveDownloader
             }
 
             $bytes = 0;
-            $checkLength = static function (string $length): void {
-                if ((int) $length > PluginArchive::MAX_ARCHIVE_BYTES) {
-                    throw new ModMenuException(t('The plugin archive is larger than 50 MB.'));
+            $failure = null;
+            // Returning a short count stops curl immediately. Report the cause after the transfer.
+            $header = static function ($curl, string $line) use (&$failure): int {
+                if (preg_match('/^Content-Length:[ \t]*([0-9]+)[ \t]*\r?\n$/iD', $line, $matches)
+                    && (int) $matches[1] > PluginArchive::MAX_ARCHIVE_BYTES) {
+                    $failure = new ModMenuException(t('The plugin archive is larger than 50 MB.'));
+                    return 0;
                 }
+                return strlen($line);
             };
-            $write = static function (string $chunk) use ($file, &$bytes): void {
+            $write = static function ($curl, string $chunk) use ($file, &$bytes, &$failure): int {
                 $length = strlen($chunk);
                 if ($length > PluginArchive::MAX_ARCHIVE_BYTES - $bytes) {
-                    throw new ModMenuException(t('The plugin archive is larger than 50 MB.'));
+                    $failure = new ModMenuException(t('The plugin archive is larger than 50 MB.'));
+                    return 0;
                 }
                 if (@fwrite($file, $chunk) !== $length) {
-                    throw new ModMenuException(t('Unable to download the plugin archive.'));
+                    $failure = new ModMenuException(t('Unable to download the plugin archive.'));
+                    return 0;
                 }
                 $bytes += $length;
+                return $length;
             };
 
             for ($redirects = 0; ; $redirects++) {
                 $address = $this->checkedAddress(parse_url($url, PHP_URL_HOST));
-                [$status, $location] = $transport($url, $address, $checkLength, $write);
+                [$status, $location] = $transport($url, $address, $header, $write);
+                if ($failure !== null) {
+                    throw $failure;
+                }
 
                 if ($status >= 200 && $status < 300 && $bytes > 0) {
                     $keep = true;
@@ -151,13 +163,17 @@ class ArchiveDownloader
         return reset($addresses);
     }
 
-    private static function resolve(string $host): array
+    private static function resolveHost(string $host, callable $lookupRecords, callable $lookupIpv4): array
     {
-        $records = @dns_get_record($host . '.', DNS_A | DNS_AAAA) ?: [];
-        return array_merge(array_column($records, 'ip'), array_column($records, 'ipv6'));
+        $records = @$lookupRecords($host . '.', DNS_A | DNS_AAAA) ?: [];
+        $ipv4 = array_column($records, 'ip');
+        if ($ipv4 === []) {
+            $ipv4 = @$lookupIpv4($host) ?: [];
+        }
+        return array_merge($ipv4, array_column($records, 'ipv6'));
     }
 
-    private static function request(string $url, string $address, callable $checkLength, callable $write): array
+    private static function request(string $url, string $address, callable $header, callable $write): array
     {
         $host = parse_url($url, PHP_URL_HOST);
         $curl = curl_init($url);
@@ -174,16 +190,8 @@ class ArchiveDownloader
             CURLOPT_CONNECTTIMEOUT => 10,
             CURLOPT_TIMEOUT => 120,
             CURLOPT_USERAGENT => Client::HTTP_USER_AGENT,
-            CURLOPT_HEADERFUNCTION => static function ($curl, string $line) use ($checkLength): int {
-                if (preg_match('/^Content-Length:[ \t]*([0-9]+)[ \t]*\r?\n$/iD', $line, $matches)) {
-                    $checkLength($matches[1]);
-                }
-                return strlen($line);
-            },
-            CURLOPT_WRITEFUNCTION => static function ($curl, string $chunk) use ($write): int {
-                $write($chunk);
-                return strlen($chunk);
-            },
+            CURLOPT_HEADERFUNCTION => $header,
+            CURLOPT_WRITEFUNCTION => $write,
         ];
         // For DNS names, pin the validated IP while keeping the URL host for TLS.
         // IP literals already identify the checked endpoint without a lookup.
@@ -194,7 +202,7 @@ class ArchiveDownloader
 
         try {
             if (! curl_setopt_array($curl, $options) || curl_exec($curl) === false) {
-                throw new ModMenuException(t('Unable to download the plugin archive.'));
+                return [0, null];
             }
 
             return [
