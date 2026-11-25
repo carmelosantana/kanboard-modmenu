@@ -638,13 +638,15 @@ class PluginManagerTest extends Base
     /** Point the manager's HTTP client at a url => zip-bytes map ('' = download failure). */
     private function stubDownloads(array $urlToZipPath): void
     {
-        $client = $this->getMockBuilder(\Kanboard\Core\Http\Client::class)
-            ->setConstructorArgs([$this->container])->onlyMethods(['get'])->getMock();
-        $client->method('get')->willReturnCallback(
-            fn (string $url) => isset($urlToZipPath[$url]) && $urlToZipPath[$url] !== '' ? file_get_contents($urlToZipPath[$url]) : ''
-        );
-        $this->container['httpClient'] = $client;
-        $this->manager = (new PluginManager($this->container))->setDirectories($this->active, $this->disabled);
+        $downloader = $this->getMockBuilder(\Kanboard\Plugin\ModMenu\Model\ArchiveDownloader::class)
+            ->onlyMethods(['fetch'])->getMock();
+        $downloader->method('fetch')->willReturnCallback(function (string $url, string $dest) use ($urlToZipPath): void {
+            if (! isset($urlToZipPath[$url]) || $urlToZipPath[$url] === '') {
+                throw new ModMenuException('Unable to download the plugin archive.');
+            }
+            copy($urlToZipPath[$url], $dest);
+        });
+        $this->manager = (new PluginManager($this->container))->setDirectories($this->active, $this->disabled)->setDownloader($downloader);
     }
 
     public function testUpdatesAvailableListsActiveOutdatedPluginsWithModMenuLast()
@@ -768,5 +770,44 @@ class PluginManagerTest extends Base
             $this->assertStringContainsString('Dep', $e->getMessage());
         }
         $this->assertStringContainsString('1.0.0', file_get_contents("{$this->active}/Beta/plugin.json"));
+    }
+
+    // ── archive checksum pin ───────────────────────────────────────────────
+
+    public function testInstallRefusesAnArchiveWhoseSha256DoesNotMatch()
+    {
+        $zip = $this->makeZip('Alpha', '1.0.0');
+        $this->stubDownloads(['https://x/alpha.zip' => $zip]);
+        try {
+            $this->manager->installFromUrl('https://x/alpha.zip', 'Alpha', str_repeat('0', 64));
+            $this->fail('a checksum mismatch must refuse the install');
+        } catch (ModMenuException $e) {
+            $this->assertStringContainsString('checksum', $e->getMessage());
+        }
+        $this->assertDirectoryDoesNotExist("{$this->active}/Alpha");
+    }
+
+    public function testInstallAcceptsAnArchiveWhoseSha256Matches()
+    {
+        $zip = $this->makeZip('Alpha', '1.0.0');
+        $this->stubDownloads(['https://x/alpha.zip' => $zip]);
+        $this->assertSame('Alpha', $this->manager->installFromUrl('https://x/alpha.zip', 'Alpha', strtoupper(hash_file('sha256', $zip))));
+    }
+
+    public function testInstallRefusesAMalformedSha256()
+    {
+        $this->stubDownloads(['https://x/alpha.zip' => $this->makeZip('Alpha', '1.0.0')]);
+        $this->expectException(ModMenuException::class);
+        $this->manager->installFromUrl('https://x/alpha.zip', 'Alpha', 'not-a-hash');
+    }
+
+    public function testUpdateAllChecksEachCatalogSha256()
+    {
+        $this->seedPlugin($this->active, 'Alpha', '1.0.0');
+        $this->stubDownloads(['https://x/alpha.zip' => $this->makeZip('Alpha', '1.1.0')]);
+        $result = $this->manager->updateAll(['Alpha' => ['version' => '1.1.0', 'download' => 'https://x/alpha.zip', 'sha256' => str_repeat('a', 64)]]);
+
+        $this->assertSame([], $result['updated']);
+        $this->assertSame(['Alpha'], array_keys($result['failed']));
     }
 }

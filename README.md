@@ -239,7 +239,8 @@ Each entry in the JSON array is an object. All fields are optional except `name`
 | `version` | string | Semantic version string (e.g. `"1.2.0"`). Used for update detection: if this is greater than the installed version, an "Update available" badge appears. |
 | `kanboard_version` (or `compatible_version`) | string | Minimum Kanboard version (e.g. `">=1.2.47"`). Checked against the plugin's own `plugin.json` on install and update: an incompatible plugin is refused. |
 | `homepage` | string | URL to the plugin's home page or repository. |
-| `download` | string | URL to the `.zip` archive. ModMenu downloads this URL when the admin clicks Install or Update. |
+| `download` | string | URL to the `.zip` archive. ModMenu downloads this URL when the admin clicks Install or Update. Must be `https://`; redirects must stay on https, and the archive is capped at 50 MB. |
+| `sha256` | string | Optional. Hex SHA-256 of the `download` archive. When present, ModMenu refuses an archive that does not hash to it, so a swapped release or a compromised host cannot install other code. |
 | `screenshots` | array | List of screenshot URLs (or paths relative to the `plugins.json` URL). Displayed as thumbnails in the Browse tab. |
 | `requires` | array | Hard dependencies — dep objects `{ "plugin": "Name", "min_version": "1.1.0" }`. ModMenu blocks activation until each is installed, active, and ≥ `min_version`, offering a one-click resolve. Reverse-protected: a required plugin can't be disabled/removed while an active dependent needs it. |
 | `recommends` | array | Soft dependencies — same dep-object shape plus an optional `"reason"`. Non-blocking: ModMenu shows a "works better with" hint and a one-click install, but activation proceeds without them. |

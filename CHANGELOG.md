@@ -5,6 +5,16 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## Unreleased
+
+### Security
+
+- Directory sources must be `https://`. Stored `http://` sources are skipped and listed as errors on Browse, so they can be re-added over https.
+- Archives download over https only, redirects included, and stop at the 50 MB cap instead of being buffered whole.
+- A directory entry can pin its archive with `sha256`; Install, Update, Update all and dependency installs refuse an archive that does not match.
+
+---
+
 ## 1.5.0 — 2026-11-20
 
 ### Added

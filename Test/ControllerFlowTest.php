@@ -342,6 +342,21 @@ class ControllerFlowTest extends Base
         $this->assertSame('Plugin updated.', $this->flashes['success']);
     }
 
+    public function testUpdateHandsTheCatalogChecksumsToTheManager()
+    {
+        $sha = str_repeat('b', 64);
+        $catalog = ['Alpha' => ['download' => 'https://x/alpha.zip', 'sha256' => $sha]];
+        $m = $this->manager();
+        $m->expects($this->once())->method('setCatalog')->with($catalog);
+        $m->expects($this->once())->method('installFromUrl')->with('https://x/alpha.zip', 'Alpha')->willReturn('Alpha');
+        $m->method('conflictWarning')->willReturn('');
+        $this->post(['name' => 'Alpha']);
+
+        $this->controller($m, $catalog)->update();
+
+        $this->assertSame('Plugin updated.', $this->flashes['success']);
+    }
+
     public function testUpdateRefusesAPluginMissingFromTheCatalog()
     {
         $m = $this->manager();

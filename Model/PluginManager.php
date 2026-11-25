@@ -36,6 +36,32 @@ class PluginManager extends Base
         return $this->disabledDir ?? (DATA_DIR . DIRECTORY_SEPARATOR . 'modmenu_disabled');
     }
 
+    private ?ArchiveDownloader $downloader = null;
+
+    /** @var array<string, string> plugin name => catalog sha256 */
+    private array $checksums = [];
+
+    public function setDownloader(ArchiveDownloader $downloader): self
+    {
+        $this->downloader = $downloader;
+        return $this;
+    }
+
+    /**
+     * Remember each catalog entry's sha256, so a named install from this
+     * catalog (updates, dependency plans) is checked against it.
+     */
+    public function setCatalog(array $catalog): self
+    {
+        $this->checksums = [];
+        foreach ($catalog as $name => $entry) {
+            if (is_array($entry) && isset($entry['sha256']) && is_string($entry['sha256'])) {
+                $this->checksums[(string) $name] = $entry['sha256'];
+            }
+        }
+        return $this;
+    }
+
     public function setDirectories(string $activeDir, string $disabledDir): self
     {
         $this->activeDir = $activeDir;
@@ -115,22 +141,25 @@ class PluginManager extends Base
     /**
      * Download and install a plugin archive. When $expectedName is given (a
      * catalog entry's name), the archive's top-level folder must match it.
+     * When a sha256 is given, or the catalog set by setCatalog() has one for
+     * $expectedName, the downloaded archive must hash to it.
      */
-    public function installFromUrl(string $url, ?string $expectedName = null): string
+    public function installFromUrl(string $url, ?string $expectedName = null, ?string $sha256 = null): string
     {
         if (! preg_match('#^https://#i', $url) || filter_var($url, FILTER_VALIDATE_URL) === false) {
             throw new ModMenuException(t('The download URL must be a valid https:// URL.'));
         }
-
-        $body = $this->httpClient->get($url);
-        if (empty($body)) {
-            throw new ModMenuException(t('Unable to download the plugin archive.'));
+        $sha256 ??= $expectedName !== null ? ($this->checksums[$expectedName] ?? null) : null;
+        if ($sha256 !== null && ! preg_match('/^[0-9a-f]{64}$/i', $sha256)) {
+            throw new ModMenuException(t('The directory lists an invalid checksum for this plugin. Nothing was installed.'));
         }
 
         $tmp = tempnam(sys_get_temp_dir(), 'modmenu_dl');
-        file_put_contents($tmp, $body);
-
         try {
+            ($this->downloader ?? new ArchiveDownloader())->fetch($url, $tmp);
+            if ($sha256 !== null && ! hash_equals(strtolower($sha256), hash_file('sha256', $tmp))) {
+                throw new ModMenuException(t('The downloaded archive does not match the checksum in the directory. Nothing was installed.'));
+            }
             return $this->installArchive($tmp, $expectedName);
         } finally {
             @unlink($tmp);
@@ -430,6 +459,7 @@ class PluginManager extends Base
     public function updateAll(array $catalog): array
     {
         $result = ['updated' => [], 'failed' => []];
+        $this->setCatalog($catalog);
         foreach ($this->updatesAvailable($catalog) as $u) {
             try {
                 $this->installFromUrl($u['download'], $u['plugin']);
