@@ -42,6 +42,13 @@ class SourceRepositoryTest extends Base
         $this->repo->addSource('ftp://example.com/x.json');
     }
 
+    public function testAddSourceRejectsPlainHttp()
+    {
+        $this->expectException(ModMenuException::class);
+        $this->expectExceptionMessage('Please enter a valid https:// URL.');
+        $this->repo->addSource('http://example.com/plugins.json');
+    }
+
     public function testRemoveSource()
     {
         $this->repo->addSource('https://example.com/a.json');

@@ -31,11 +31,18 @@ class SourceRepository extends Base
         return is_array($decoded) ? array_values($decoded) : [self::DEFAULT_SOURCE];
     }
 
+    public static function isSecureUrl(mixed $url): bool
+    {
+        return is_string($url)
+            && preg_match('#^https://#i', $url) === 1
+            && filter_var($url, FILTER_VALIDATE_URL) !== false;
+    }
+
     public function addSource(string $url): void
     {
         $url = trim($url);
-        if (! preg_match('#^https?://#i', $url) || filter_var($url, FILTER_VALIDATE_URL) === false) {
-            throw new ModMenuException(t('Please enter a valid http(s) URL.'));
+        if (! self::isSecureUrl($url)) {
+            throw new ModMenuException(t('Please enter a valid https:// URL.'));
         }
 
         $sources = $this->getSources();

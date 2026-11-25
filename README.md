@@ -240,8 +240,8 @@ returns a JSON array of plugin objects.
 
 1. Go to **Settings → ModMenu → Sources**.
 2. Enter the full `https://` URL to a `plugins.json` file and click **Add source**.
-3. Switch to the **Browse** tab — ModMenu fetches all sources and merges the results
-   (first source wins for duplicate plugin names).
+3. Switch to the **Browse** tab. ModMenu merges results from `https://` sources
+   (first source wins for duplicate plugin names). Re-add any saved `http://` sources over HTTPS.
 
 ### `plugins.json` field reference
 
@@ -260,6 +260,7 @@ Each entry in the JSON array is an object. All fields are optional except `name`
 | `kanboard_version` (or `compatible_version`) | string | Minimum Kanboard version (e.g. `">=1.2.47"`). Checked against the plugin's own `plugin.json` on install and update: an incompatible plugin is refused. |
 | `homepage` | string | URL to the plugin's home page or repository. |
 | `download` | string | URL to the `.zip` archive. ModMenu downloads this URL when the admin clicks Install or Update. |
+| `sha256` | string | Optional 64-digit hexadecimal SHA-256 of the `download` archive. If present, the archive must match it before installation. |
 | `screenshots` | array | List of screenshot URLs (or paths relative to the `plugins.json` URL). Displayed as thumbnails in the Browse tab. |
 | `requires` | array | Hard dependencies — dep objects `{ "plugin": "Name", "min_version": "1.1.0" }`. ModMenu blocks activation until each is installed, active, and ≥ `min_version`, offering a one-click resolve. Reverse-protected: a required plugin can't be disabled/removed while an active dependent needs it. |
 | `recommends` | array | Soft dependencies — same dep-object shape plus an optional `"reason"`. Non-blocking: ModMenu shows a "works better with" hint and a one-click install, but activation proceeds without them. |

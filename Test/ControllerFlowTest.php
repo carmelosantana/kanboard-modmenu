@@ -624,6 +624,54 @@ class ControllerFlowTest extends Base
 
     // ── catalog-driven install and update ──────────────────────────────────
 
+    /** @dataProvider catalogDownloadActions */
+    public function testCatalogDownloadActionsRefuseMismatchedChecksums(string $action, bool $dependency, bool $installed)
+    {
+        $manager = $this->migrationFixture();
+        $root = $this->migrationFixtureRoot;
+        $url = 'https://x/alpha.zip';
+        if ($installed) {
+            mkdir($root . '/active/Alpha');
+            file_put_contents($root . '/active/Alpha/Plugin.php', "<?php\nnamespace Kanboard\\Plugin\\Alpha;\n");
+            file_put_contents($root . '/active/Alpha/plugin.json', '{"version":"1.0.0"}');
+        }
+        $path = $root . '/download.zip';
+        $zip = new ZipArchive();
+        $zip->open($path, ZipArchive::CREATE);
+        $zip->addFromString('Alpha/Plugin.php', "<?php\nnamespace Kanboard\\Plugin\\Alpha;\n");
+        $zip->addFromString('Alpha/plugin.json', '{"version":"2.0.0"}');
+        $zip->close();
+        $downloader = $this->createMock(ArchiveDownloader::class);
+        $downloader->expects($this->once())->method('download')->with($url)->willReturn($path);
+        $manager->setArchiveDownloader($downloader);
+
+        $catalog = ['Alpha' => ['download' => $url, 'version' => '2.0.0', 'sha256' => str_repeat('0', 64)]];
+        if ($dependency) {
+            $catalog['Target'] = [
+                'download' => 'https://x/target.zip',
+                'requires' => [['plugin' => 'Alpha', 'min_version' => '2.0.0']],
+            ];
+        }
+        $before = $manager->installedMap();
+        $this->post(['name' => $dependency ? 'Target' : 'Alpha', 'action' => 'install']);
+
+        $this->controller($manager, $catalog)->$action();
+
+        $this->assertSame('The downloaded archive does not match the checksum in the directory. Nothing was installed.', $this->flashes['failure'] ?? null);
+        $this->assertSame($before, $manager->installedMap());
+        $this->assertFileDoesNotExist($path);
+    }
+
+    public static function catalogDownloadActions(): array
+    {
+        return [
+            'single install' => ['install', false, false],
+            'single update' => ['update', false, true],
+            'dependency install' => ['resolve', true, false],
+            'dependency update' => ['resolve', true, true],
+        ];
+    }
+
     public function testUpdateInstallsTheCatalogDownloadForTheNamedPlugin()
     {
         $catalog = ['Alpha' => ['download' => 'https://x/alpha.zip']];

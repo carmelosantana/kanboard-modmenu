@@ -1136,6 +1136,122 @@ class PluginManagerTest extends Base
         $this->assertFileDoesNotExist($path);
     }
 
+    public function testInstallFromUrlAcceptsMatchingUppercaseChecksum()
+    {
+        $url = 'https://x/alpha.zip';
+        $zip = $this->makeZip('Alpha', '1.0.0');
+        $this->stubDownloads([$url => $zip]);
+        $this->manager->setCatalog(['Alpha' => ['download' => $url, 'sha256' => strtoupper(hash_file('sha256', $zip))]]);
+
+        $this->assertSame('Alpha', $this->manager->installFromUrl($url, 'Alpha'));
+    }
+
+    public function testInstallFromUrlChecksHashBeforeInspectingArchiveAndDeletesDownload()
+    {
+        $url = 'https://x/alpha.zip';
+        $path = tempnam($this->root, 'download-');
+        file_put_contents($path, 'Not a ZIP archive');
+        $downloader = $this->createMock(ArchiveDownloader::class);
+        $downloader->expects($this->once())->method('download')->with($url)->willReturn($path);
+        $this->manager->setArchiveDownloader($downloader);
+        $this->manager->setCatalog(['Alpha' => ['download' => $url, 'sha256' => str_repeat('0', 64)]]);
+
+        try {
+            $this->manager->installFromUrl($url, 'Alpha');
+            $this->fail('Expected a checksum mismatch before archive inspection.');
+        } catch (ModMenuException $e) {
+            $this->assertSame('The downloaded archive does not match the checksum in the directory. Nothing was installed.', $e->getMessage());
+        }
+        $this->assertFileDoesNotExist($path);
+        $this->assertSame([], $this->manager->listInstalled());
+    }
+
+    /** @dataProvider malformedCatalogChecksums */
+    public function testInstallFromUrlRejectsMalformedCatalogChecksumBeforeDownloading($checksum)
+    {
+        $url = 'https://x/alpha.zip';
+        $downloader = $this->createMock(ArchiveDownloader::class);
+        $downloader->expects($this->never())->method('download');
+        $this->manager->setArchiveDownloader($downloader);
+        $this->manager->setCatalog(['Alpha' => ['download' => $url, 'sha256' => $checksum]]);
+
+        $this->expectException(ModMenuException::class);
+        $this->expectExceptionMessage('The directory lists an invalid checksum for this plugin. Nothing was installed.');
+        $this->manager->installFromUrl($url, 'Alpha');
+    }
+
+    public static function malformedCatalogChecksums(): array
+    {
+        return [
+            'empty' => [''],
+            'trailing newline' => [str_repeat('a', 64) . "\n"],
+            'nonhex' => [str_repeat('g', 64)],
+            'array' => [[]],
+            'explicit null' => [null],
+        ];
+    }
+
+    public function testUpdateAllRefusesMismatchedCatalogChecksum()
+    {
+        $url = 'https://x/alpha.zip';
+        $this->seedNamespaced('Alpha', '1.0.0');
+        $this->stubDownloads([$url => $this->makeZip('Alpha', '1.1.0')]);
+        $result = $this->manager->updateAll([
+            'Alpha' => ['download' => $url, 'version' => '1.1.0', 'sha256' => str_repeat('0', 64)],
+        ]);
+
+        $this->assertSame([
+            'updated' => [],
+            'failed' => ['Alpha' => 'The downloaded archive does not match the checksum in the directory. Nothing was installed.'],
+        ], $result);
+        $this->assertSame('1.0.0', $this->manager->installedMap()['Alpha']['version']);
+    }
+
+    public function testMigrateRefusesMismatchedSuccessorChecksum()
+    {
+        $url = 'https://x/harbor.zip';
+        $this->seedPlugin($this->active, 'ShadcnTheme', '1.3.0', ['deprecated' => ['superseded_by' => 'Harbor']]);
+        $this->stubDownloads([$url => $this->makeZip('Harbor', '2.0.0')]);
+        $before = $this->manager->installedMap();
+
+        try {
+            $this->manager->migrate('ShadcnTheme', ['Harbor' => ['download' => $url, 'sha256' => str_repeat('0', 64)]]);
+            $this->fail('Expected a checksum mismatch on the successor.');
+        } catch (ModMenuException $e) {
+            $this->assertStringContainsString('The downloaded archive does not match the checksum in the directory. Nothing was installed.', $e->getMessage());
+        }
+        $this->assertSame($before, $this->manager->installedMap());
+    }
+
+    /** @dataProvider journalledDependencyDownloads */
+    public function testMigrationDependencyDownloadsCheckCatalogChecksum(string $action)
+    {
+        $url = 'https://x/foundation.zip';
+        if ($action === 'update') {
+            $this->seedNamespaced('Foundation', '1.0.0');
+        }
+        $this->stubDownloads([$url => $this->makeZip('Foundation', '2.0.0')]);
+        $this->manager->setCatalog(['Foundation' => ['download' => $url, 'sha256' => str_repeat('0', 64)]]);
+        $before = $this->manager->installedMap();
+        $journal = [];
+
+        try {
+            $this->manager->resolveDependencies([
+                ['plugin' => 'Foundation', 'action' => $action, 'download' => $url],
+            ], $journal);
+            $this->fail('Expected a checksum mismatch on the dependency.');
+        } catch (ModMenuException $e) {
+            $this->assertSame('The downloaded archive does not match the checksum in the directory. Nothing was installed.', $e->getMessage());
+        }
+        $this->assertSame($before, $this->manager->installedMap());
+        $this->assertSame([], $journal);
+    }
+
+    public static function journalledDependencyDownloads(): array
+    {
+        return [['install'], ['update']];
+    }
+
     public function testDownloaderFailureLeavesNothingInstalled()
     {
         $client = $this->createMock(\Kanboard\Core\Http\Client::class);

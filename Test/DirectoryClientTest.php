@@ -4,6 +4,7 @@ require_once 'tests/units/Base.php';
 
 use KanboardTests\units\Base;
 use Kanboard\Plugin\ModMenu\Model\DirectoryClient;
+use Kanboard\Plugin\ModMenu\Model\SourceRepository;
 
 class DirectoryClientTest extends Base
 {
@@ -13,6 +14,35 @@ class DirectoryClientTest extends Base
     {
         parent::setUp();
         $this->client = new DirectoryClient($this->container);
+    }
+
+    public function testFetchAllReportsEachStoredHttpSourceWithoutFetchingIt()
+    {
+        $insecure = ['http://old.example/plugins.json', 'http://legacy.example/plugins.json'];
+        $secure = 'https://current.example/plugins.json';
+        $sha256 = str_repeat('a', 64);
+        $this->container['configModel']->save([
+            SourceRepository::CONFIG_KEY => json_encode([$insecure[0], $secure, $insecure[1]]),
+        ]);
+        $this->container['memoryCache']->flush();
+        $fetched = [];
+        $this->container['httpClient']->method('getJson')->willReturnCallback(
+            static function ($url) use (&$fetched, $secure, $sha256) {
+                $fetched[] = $url;
+                return $url === $secure ? [['name' => 'Alpha', 'sha256' => $sha256]] : [];
+            }
+        );
+
+        $result = $this->client->fetchAll();
+
+        $this->assertSame([$secure], $fetched);
+        $this->assertSame(['Alpha'], array_column($result['plugins'], 'name'));
+        $this->assertSame([$sha256], array_column($result['plugins'], 'sha256'));
+        $this->assertSame(array_map(static fn ($url) => [
+            'url' => $url,
+            'message' => 'Skipped: directory sources must use https://. Remove this source and add it again over https.',
+        ], $insecure), $result['errors']);
+        $this->assertSame([$insecure[0], $secure, $insecure[1]], (new SourceRepository($this->container))->getSources());
     }
 
     public function testResolveAssetUrlKeepsAbsolute()

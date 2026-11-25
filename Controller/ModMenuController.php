@@ -369,7 +369,10 @@ class ModMenuController extends BaseController
         }
 
         $this->runAndFlash(
-            fn (PluginManager $m) => $m->resolveAndActivate($name, $action, $target, $check['plan']),
+            function (PluginManager $m) use ($name, $action, $target, $check, $catalog) {
+                $m->setCatalog($catalog);
+                $m->resolveAndActivate($name, $action, $target, $check['plan']);
+            },
             $action === 'install' ? t('Plugin and its dependencies installed.') : t('Plugin and its dependencies enabled.'),
             $name
         );
@@ -381,7 +384,8 @@ class ModMenuController extends BaseController
         $this->requireAdmin();
         $this->checkCSRFForm();
         $expected = $this->postValue('name');
-        $url = (string) ($this->catalog()[$expected]['download'] ?? '');
+        $catalog = $this->catalog();
+        $url = (string) ($catalog[$expected]['download'] ?? '');
         if ($expected === '' || $url === '') {
             $this->flash->failure(t('This plugin is not in the directory.'));
             $this->backToDirectory();
@@ -389,6 +393,7 @@ class ModMenuController extends BaseController
         }
         $manager = $this->manager();
         try {
+            $manager->setCatalog($catalog);
             $name = $manager->installFromUrl($url, $expected);
         } catch (ModMenuException $e) {
             $this->flash->failure($e->getMessage());
@@ -445,7 +450,8 @@ class ModMenuController extends BaseController
         $check = $manager->forwardCheck($requires, $catalog);
 
         if ($check['satisfied']) {
-            $this->runAndFlash(function (PluginManager $m) use ($name, $action, $target) {
+            $this->runAndFlash(function (PluginManager $m) use ($name, $action, $target, $catalog) {
+                $m->setCatalog($catalog);
                 $action === 'install' ? $m->installFromUrl($target, $name) : $m->enable($name);
             }, $prefix . ($action === 'install' ? t('Plugin installed.') : t('Plugin enabled.')), $name);
             $action === 'install' ? $this->backToDirectory() : $this->backToInstalled();

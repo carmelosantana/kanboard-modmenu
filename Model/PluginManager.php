@@ -28,6 +28,8 @@ class PluginManager extends Base
 
     private ?ArchiveDownloader $archiveDownloader = null;
 
+    private array $catalog = [];
+
     private function activeDir(): string
     {
         return $this->activeDir ?? PLUGINS_DIR;
@@ -48,6 +50,12 @@ class PluginManager extends Base
     public function setArchiveDownloader(ArchiveDownloader $downloader): self
     {
         $this->archiveDownloader = $downloader;
+        return $this;
+    }
+
+    public function setCatalog(array $catalog): self
+    {
+        $this->catalog = $catalog;
         return $this;
     }
 
@@ -162,6 +170,7 @@ class PluginManager extends Base
             throw new ModMenuException(t('"%s" has unmet requirements.', $successor));
         }
 
+        $this->setCatalog($catalog);
         $before = $this->installedMap();
         $journal = [];
         try {
@@ -255,7 +264,8 @@ class PluginManager extends Base
 
     /**
      * Download and install a plugin archive. When $expectedName is given (a
-     * catalog entry's name), the archive's top-level folder must match it.
+     * catalog entry's name), the archive's folder and any catalog SHA-256
+     * checksum must match.
      */
     public function installFromUrl(string $url, ?string $expectedName = null, bool $installDisabled = false): string
     {
@@ -264,9 +274,24 @@ class PluginManager extends Base
 
     private function downloadAndInstall(string $url, ?string $expectedName, bool $installDisabled, ?array &$journal = null): string
     {
+        $entry = $expectedName === null ? [] : ($this->catalog[$expectedName] ?? []);
+        $sha256 = null;
+        if (is_array($entry) && array_key_exists('sha256', $entry)) {
+            $sha256 = $entry['sha256'];
+            if (! is_string($sha256) || preg_match('/\A[0-9a-f]{64}\z/i', $sha256) !== 1) {
+                throw new ModMenuException(t('The directory lists an invalid checksum for this plugin. Nothing was installed.'));
+            }
+        }
+
         $tmp = ($this->archiveDownloader ??= new ArchiveDownloader())->download($url);
 
         try {
+            if ($sha256 !== null) {
+                $actual = @hash_file('sha256', $tmp);
+                if ($actual === false || ! hash_equals(strtolower($sha256), $actual)) {
+                    throw new ModMenuException(t('The downloaded archive does not match the checksum in the directory. Nothing was installed.'));
+                }
+            }
             return $this->installArchive($tmp, $expectedName, $installDisabled, $journal);
         } finally {
             @unlink($tmp);
@@ -682,6 +707,7 @@ class PluginManager extends Base
      */
     public function updateAll(array $catalog): array
     {
+        $this->setCatalog($catalog);
         $result = ['updated' => [], 'failed' => []];
         foreach ($this->updatesAvailable($catalog) as $u) {
             try {
