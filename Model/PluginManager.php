@@ -145,18 +145,22 @@ class PluginManager extends Base
         return $check;
     }
 
+    public function assertMigrationConflicts(string $old, string $successor, array $catalog): void
+    {
+        $entry = $catalog[$successor] ?? [];
+        $conflicts = array_diff($this->activeConflicts($successor, $entry['conflicts'] ?? [], $entry['replaces'] ?? []), [$old]);
+        if ($conflicts !== []) {
+            throw new ModMenuException(t('%s conflicts with %s. Disable them first.', $successor, implode(', ', $conflicts)));
+        }
+    }
+
     public function migrate(string $old, array $catalog): string
     {
         $successor = $this->prepareMigration($old, $catalog);
         if (! $this->migrationCheck($old, $successor, $catalog)['satisfied']) {
             throw new ModMenuException(t('"%s" has unmet requirements.', $successor));
         }
-
-        $entry = $catalog[$successor] ?? [];
-        $conflicts = array_diff($this->activeConflicts($successor, $entry['conflicts'] ?? [], $entry['replaces'] ?? []), [$old]);
-        if ($conflicts !== []) {
-            throw new ModMenuException(t('%s conflicts with %s. Disable them first.', $successor, implode(', ', $conflicts)));
-        }
+        $this->assertMigrationConflicts($old, $successor, $catalog);
 
         $installed = $this->installedMap();
         $oldWasActive = $installed[$old]['status'] === 'active';

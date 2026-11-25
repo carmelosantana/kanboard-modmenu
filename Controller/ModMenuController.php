@@ -184,6 +184,7 @@ class ModMenuController extends BaseController
             $catalog = $this->catalog();
             $successor = $manager->prepareMigration($name, $catalog);
             $check = $manager->migrationCheck($name, $successor, $catalog);
+            $manager->assertMigrationConflicts($name, $successor, $catalog);
             if ($check['blocked']) {
                 throw new ModMenuException(t('"%s" has requirements that cannot be installed automatically. Install them manually first.', $successor));
             }

@@ -86,7 +86,7 @@ class ControllerFlowTest extends Base
         return $this->createMock(PluginManager::class);
     }
 
-    private function migrationFixture(?string $successor = 'Harbor', ?array $harbor = null): PluginManager
+    private function migrationFixture(?string $successor = 'Harbor', ?array $harbor = null, ?PluginManager $manager = null): PluginManager
     {
         $root = sys_get_temp_dir() . '/modmenu-migrate-' . bin2hex(random_bytes(8));
         $this->migrationFixtureRoot = $root;
@@ -100,7 +100,7 @@ class ControllerFlowTest extends Base
             file_put_contents($root . '/disabled/Harbor/Plugin.php', '<?php');
             file_put_contents($root . '/disabled/Harbor/plugin.json', json_encode($harbor));
         }
-        return (new PluginManager($this->container))->setDirectories($root . '/active', $root . '/disabled');
+        return ($manager ?? new PluginManager($this->container))->setDirectories($root . '/active', $root . '/disabled');
     }
 
     private ?string $migrationFixtureRoot = null;
@@ -238,6 +238,30 @@ class ControllerFlowTest extends Base
         $this->assertSame('active', $installed['Foundation']['status']);
         $this->assertSame('active', $installed['Harbor']['status']);
         $this->assertSame('disabled', $installed['ShadcnTheme']['status']);
+    }
+
+    public function testRunMigrateRejectsActiveConflictBeforeResolvingDependencies()
+    {
+        $manager = $this->getMockBuilder(PluginManager::class)
+            ->setConstructorArgs([$this->container])->onlyMethods(['resolveDependencies'])->getMock();
+        $manager->expects($this->never())->method('resolveDependencies');
+        $this->migrationFixture('Harbor', [
+            'requires' => [['plugin' => 'Foundation']],
+            'conflicts' => ['OtherTheme'],
+            'replaces' => ['ShadcnTheme'],
+        ], $manager);
+        foreach (['disabled/Foundation', 'active/OtherTheme'] as $folder) {
+            $path = $this->migrationFixtureRoot . '/' . $folder;
+            mkdir($path);
+            file_put_contents($path . '/Plugin.php', '<?php');
+        }
+        $this->assertNotEmpty($manager->migrationCheck('ShadcnTheme', 'Harbor', [])['plan']);
+        $before = $manager->installedMap();
+        $this->post(['name' => 'ShadcnTheme', 'action' => 'migrate']);
+        $this->controller($manager)->runMigrate();
+
+        $this->assertSame(['failure' => 'Harbor conflicts with OtherTheme. Disable them first.'], $this->flashes);
+        $this->assertSame($before, $manager->installedMap());
     }
 
     // ── Installed tab: requirement states ─────────────────────────────────
