@@ -90,7 +90,12 @@ class DirectoryClient extends Base
 
     public function annotate(array $plugins, string $baseUrl, array $installedMap): array
     {
-        $resolver = new DependencyResolver($this->container);
+        $plugins = $this->normalizeEntries($plugins, $baseUrl, $installedMap);
+        return $this->annotateRequirements($plugins, $installedMap);
+    }
+
+    private function normalizeEntries(array $plugins, string $baseUrl, array $installedMap): array
+    {
         foreach ($plugins as &$plugin) {
             $name = $plugin['name'] ?? '';
             $version = (string) ($plugin['version'] ?? '0.0.0');
@@ -119,7 +124,6 @@ class DirectoryClient extends Base
             $plugin['replaces'] = PluginManager::normalizeReplaces($plugin['replaces'] ?? []);
             $plugin['deprecated'] = PluginManager::normalizeDeprecated($plugin['deprecated'] ?? null);
             $plugin['requires'] = PluginManager::normalizeDeps($plugin['requires'] ?? []);
-            $plugin['requires_state'] = $resolver->resolveForward($plugin['requires'], 'requires', $installedMap, [])['deps'];
 
             if (! empty($plugin['screenshots']) && is_array($plugin['screenshots'])) {
                 $plugin['screenshots'] = array_map(
@@ -133,12 +137,22 @@ class DirectoryClient extends Base
         return $plugins;
     }
 
+    private function annotateRequirements(array $plugins, array $installedMap): array
+    {
+        $resolver = new DependencyResolver($this->container);
+        $catalog = self::indexByName($plugins);
+        foreach ($plugins as &$plugin) {
+            $plugin['requires_state'] = $resolver->resolveForward($plugin['requires'], 'requires', $installedMap, $catalog)['deps'];
+        }
+        return $plugins;
+    }
+
     public function merge(array $sourcesData, array $installedMap): array
     {
         $byName = [];
         foreach ($sourcesData as $source) {
-            $annotated = $this->annotate($source['plugins'] ?? [], $source['url'] ?? '', $installedMap);
-            foreach ($annotated as $plugin) {
+            $entries = $this->normalizeEntries($source['plugins'] ?? [], $source['url'] ?? '', $installedMap);
+            foreach ($entries as $plugin) {
                 $name = $plugin['name'] ?? '';
                 if ($name !== '' && ! isset($byName[$name])) {
                     $plugin['source_url'] = $source['url'] ?? '';
@@ -146,7 +160,7 @@ class DirectoryClient extends Base
                 }
             }
         }
-        return array_values($byName);
+        return $this->annotateRequirements(array_values($byName), $installedMap);
     }
 
     /**

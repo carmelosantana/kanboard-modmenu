@@ -4,6 +4,7 @@ require_once 'tests/units/Base.php';
 
 use KanboardTests\units\Base;
 use Kanboard\Plugin\ModMenu\Model\DependencyResolver;
+use Kanboard\Plugin\ModMenu\Model\DirectoryClient;
 
 class DependencyResolverTest extends Base
 {
@@ -45,6 +46,85 @@ class DependencyResolverTest extends Base
         $map = ['Cal' => ['version' => '1.0.0', 'status' => 'active']];
         $this->assertFalse(DependencyResolver::isSatisfied($this->dep('Cal', '1.1.0'), $map));
         $this->assertTrue(DependencyResolver::isSatisfied($this->dep('Cal', '1.0.0'), $map));
+    }
+
+    public function testIsSatisfiedOnlyByActiveSuccessor()
+    {
+        $map = ['Harbor' => ['version' => '2.0.0', 'status' => 'active', 'replaces' => ['ShadcnTheme']]];
+        $dep = $this->dep('ShadcnTheme', '1.0.0');
+        $this->assertTrue(DependencyResolver::isSatisfied($dep, $map));
+        $map['Harbor']['status'] = 'disabled';
+        $this->assertFalse(DependencyResolver::isSatisfied($dep, $map));
+    }
+
+    public function testClassifyActiveSuccessorIgnoresOldVersionFloor()
+    {
+        $map = ['Harbor' => ['version' => '2.0.0', 'status' => 'active', 'replaces' => ['ShadcnTheme']]];
+        $dep = $this->dep('ShadcnTheme', '9.0.0');
+        $c = DependencyResolver::classify($dep, $map, []);
+        $this->assertSame('satisfied', $c['status']);
+        $this->assertSame('none', $c['action']);
+        $this->assertSame('Harbor', $c['satisfied_by']);
+
+        $map['Harbor']['status'] = 'disabled';
+        $c = DependencyResolver::classify($dep, $map, []);
+        $this->assertSame('disabled', $c['status']);
+        $this->assertSame('enable', $c['action']);
+        $this->assertSame('Harbor', $c['plugin']);
+    }
+
+    public function testClassifyUsesSuccessorDownloadFromEitherCatalogDeclaration()
+    {
+        $harbor = ['version' => '2.0.0', 'download' => 'https://x/harbor.zip'];
+        $old = ['version' => '1.3.0', 'download' => 'https://x/shadcn.zip'];
+        $catalogs = [
+            ['ShadcnTheme' => $old, 'Harbor' => $harbor + ['replaces' => ['ShadcnTheme']]],
+            ['ShadcnTheme' => $old + ['deprecated' => ['superseded_by' => 'Harbor']], 'Harbor' => $harbor],
+        ];
+        foreach ($catalogs as $catalog) {
+            $c = DependencyResolver::classify($this->dep('ShadcnTheme', '9.0.0'), [], $catalog);
+            $this->assertSame('missing', $c['status']);
+            $this->assertSame('install', $c['action']);
+            $this->assertSame('https://x/harbor.zip', $c['download']);
+            $this->assertSame('Harbor', $c['satisfied_by']);
+        }
+    }
+
+    public function testClassifyPrefersTheActiveRequestedPlugin()
+    {
+        $map = [
+            'ShadcnTheme' => ['version' => '1.3.0', 'status' => 'active'],
+            'Harbor' => ['version' => '2.0.0', 'status' => 'active', 'replaces' => ['ShadcnTheme']],
+        ];
+        $dep = $this->dep('ShadcnTheme', '1.0.0');
+        $this->assertArrayNotHasKey('satisfied_by', DependencyResolver::classify($dep, $map, []));
+        $map['ShadcnTheme']['status'] = 'disabled';
+        $this->assertSame('Harbor', DependencyResolver::classify($dep, $map, [])['satisfied_by']);
+    }
+
+    public function testSuccessorForIgnoresSelfReferencesAndPrefersInstalledSuccessor()
+    {
+        $self = ['replaces' => ['X'], 'deprecated' => ['superseded_by' => 'X']];
+        $this->assertNull(DependencyResolver::successorFor('X', ['X' => $self], ['X' => $self]));
+        $this->assertSame('Installed', DependencyResolver::successorFor(
+            'X',
+            ['Installed' => ['replaces' => ['X'], 'status' => 'disabled']],
+            ['X' => ['deprecated' => ['superseded_by' => 'Listed']], 'Listed' => ['replaces' => ['X']]]
+        ));
+    }
+
+    public function testDirectoryAnnotationRecognizesInstalledSuccessorFromCatalog()
+    {
+        $plugins = [
+            ['name' => 'Consumer', 'requires' => [$this->dep('ShadcnTheme')]],
+            ['name' => 'ShadcnTheme', 'deprecated' => ['superseded_by' => 'Harbor']],
+            ['name' => 'Harbor', 'version' => '2.0.0'],
+        ];
+        $map = ['Harbor' => ['version' => '2.0.0', 'status' => 'active']];
+        $client = new DirectoryClient($this->container);
+        $state = $client->annotate($plugins, 'https://x/plugins.json', $map)[0]['requires_state'][0];
+        $this->assertSame('satisfied', $state['status']);
+        $this->assertSame('Harbor', $state['satisfied_by']);
     }
 
     // ---- classify ----
@@ -207,6 +287,32 @@ class DependencyResolverTest extends Base
         $this->assertCount(1, $plan);
         $this->assertSame('Cal', $plan[0]['plugin']);
         $this->assertSame('install', $plan[0]['action']);
+    }
+
+    public function testResolveClosureUsesTheSuccessorsOwnNameAndRequirements()
+    {
+        $catalog = [
+            'Harbor' => [
+                'version' => '2.0.0', 'download' => 'https://x/harbor.zip',
+                'replaces' => ['ShadcnTheme'], 'requires' => [$this->dep('Cal')],
+            ],
+            'Cal' => ['version' => '1.0.0', 'download' => 'https://x/cal.zip'],
+        ];
+        $plan = $this->resolver->resolveClosure([$this->dep('ShadcnTheme', '9.0.0'), $this->dep('Harbor')], [], $catalog);
+        $this->assertSame(['Cal', 'Harbor'], array_column($plan, 'plugin'));
+        $this->assertSame('install', $plan[1]['action']);
+        $this->assertNull($plan[1]['min_version']);
+    }
+
+    public function testResolveClosureStillEnforcesAHarborVersionFloor()
+    {
+        $catalog = ['Harbor' => [
+            'version' => '2.0.0', 'download' => 'https://x/harbor.zip', 'replaces' => ['ShadcnTheme'],
+        ]];
+        $map = ['Harbor' => ['version' => '2.0.0', 'status' => 'disabled', 'replaces' => ['ShadcnTheme']]];
+        $plan = $this->resolver->resolveClosure([$this->dep('ShadcnTheme'), $this->dep('Harbor', '9.0.0')], $map, $catalog);
+        $this->assertSame(['Harbor'], array_column($plan, 'plugin'));
+        $this->assertSame('unresolvable', $plan[0]['action']);
     }
 
     public function testResolveClosureOmitsSatisfied()

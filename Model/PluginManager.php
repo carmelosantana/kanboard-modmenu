@@ -73,7 +73,12 @@ class PluginManager extends Base
     {
         $map = [];
         foreach ($this->listInstalled() as $p) {
-            $map[$p['name']] = ['version' => $p['version'], 'status' => $p['status']];
+            $map[$p['name']] = [
+                'version' => $p['version'],
+                'status' => $p['status'],
+                'replaces' => $p['replaces'],
+                'deprecated' => $p['deprecated'],
+            ];
         }
         return $map;
     }

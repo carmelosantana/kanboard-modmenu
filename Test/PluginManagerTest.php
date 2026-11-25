@@ -356,6 +356,35 @@ class PluginManagerTest extends Base
         $this->assertSame(['requires'], array_values(array_unique(array_column($states, 'kind'))));
     }
 
+    public function testInstalledSuccessorMeetsRequirementsAndRecommendations()
+    {
+        $this->seedPlugin($this->active, 'Harbor', '2.0.0', ['replaces' => ['ShadcnTheme']]);
+        $this->seedPlugin($this->disabled, 'ShadcnTheme', '1.3.0');
+        $deps = [['plugin' => 'ShadcnTheme', 'min_version' => '9.0.0']];
+        $map = $this->manager->installedMap();
+        $this->assertSame(['ShadcnTheme'], $map['Harbor']['replaces']);
+        $this->assertSame([], $this->manager->unmetDepsFor($deps, $deps, [], $map));
+    }
+
+    public function testRequirementTemplateNamesTheSuccessor()
+    {
+        $html = $this->container['template']->render('ModMenu:settings/requirement', [
+            'dep' => ['plugin' => 'ShadcnTheme', 'status' => 'satisfied', 'satisfied_by' => 'Harbor'],
+            'actions' => false,
+            'missing_label' => 'Missing requirement:',
+        ]);
+        $this->assertStringContainsString('Met by Harbor', $html);
+    }
+
+    public function testCannotDisableSuccessorWithAnActiveHardDependent()
+    {
+        $this->seedPlugin($this->active, 'Harbor', '2.0.0', ['replaces' => ['ShadcnTheme']]);
+        $this->seedPluginWithDeps($this->active, 'Consumer', '1.0.0', [['plugin' => 'ShadcnTheme']]);
+        $this->expectException(ModMenuException::class);
+        $this->expectExceptionMessage('is required by: Consumer');
+        $this->manager->disable('Harbor');
+    }
+
     public function testRequirementStatesAndUnmetDepsUseAGivenInstalledMapInsteadOfScanning()
     {
         // Nothing on disk: the passed map is the only source of install state.

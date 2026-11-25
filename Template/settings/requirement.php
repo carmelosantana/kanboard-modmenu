@@ -15,7 +15,12 @@ $tooOld = ! empty($min) && $installed !== null && $installed !== '' && version_c
     <i class="fa <?= $status === 'satisfied' ? 'fa-check-circle' : 'fa-exclamation-triangle' ?>" aria-hidden="true"></i>
     <span class="modmenu-dep__label">
         <?php if ($status === 'satisfied'): ?>
-            <strong class="modmenu-callout__label"><?= t('Requirement met:') ?></strong> <?= $this->text->e($dep['plugin']) ?><?php if ($installed !== null && $installed !== ''): ?> <?= $this->text->e($installed) ?><?php endif ?><?php if (! empty($min)): ?> (&ge; <?= $this->text->e($min) ?>)<?php endif ?>
+            <strong class="modmenu-callout__label"><?= t('Requirement met:') ?></strong> <?= $this->text->e($dep['plugin']) ?>
+            <?php if (isset($dep['satisfied_by'])): ?>
+                — <?= t('Met by %s', $this->text->e($dep['satisfied_by'])) ?>
+            <?php else: ?>
+                <?php if ($installed !== null && $installed !== ''): ?> <?= $this->text->e($installed) ?><?php endif ?><?php if (! empty($min)): ?> (&ge; <?= $this->text->e($min) ?>)<?php endif ?>
+            <?php endif ?>
         <?php elseif ($status === 'outdated'): ?>
             <strong class="modmenu-callout__label"><?= t('Update needed:') ?></strong> <?= $this->text->e($dep['plugin']) ?> — <?= t('%s installed, needs ≥ %s', $this->text->e($installed), $this->text->e($min)) ?>
         <?php else: ?>

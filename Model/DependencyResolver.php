@@ -17,23 +17,48 @@ use Kanboard\Core\Base;
 class DependencyResolver extends Base
 {
     /**
-     * Satisfied = installed AND active AND (no min_version OR installed >= min).
+     * Prefer an installed successor, with an active one ahead of a disabled one.
      */
+    public static function successorFor(string $name, array $installedMap, array $catalog): ?string
+    {
+        if ($name === '') {
+            return null;
+        }
+
+        $candidates = [];
+        foreach ([$installedMap, $catalog] as $entries) {
+            $deprecated = PluginManager::normalizeDeprecated($entries[$name]['deprecated'] ?? null);
+            $successor = $deprecated['superseded_by'] ?? null;
+            if ($successor !== null && $successor !== $name) {
+                $candidates[$successor] = true;
+            }
+            foreach ($entries as $candidate => $entry) {
+                if ((string) $candidate !== $name
+                    && in_array($name, PluginManager::normalizeReplaces($entry['replaces'] ?? []), true)) {
+                    $candidates[$candidate] = true;
+                }
+            }
+        }
+
+        $installed = null;
+        $listed = null;
+        foreach (array_keys($candidates) as $candidate) {
+            if (($installedMap[$candidate]['status'] ?? null) === 'active') {
+                return (string) $candidate;
+            }
+            if (isset($installedMap[$candidate])) {
+                $installed ??= (string) $candidate;
+            }
+            if (isset($catalog[$candidate])) {
+                $listed ??= (string) $candidate;
+            }
+        }
+        return $installed ?? $listed;
+    }
+
     public static function isSatisfied(array $dep, array $installedMap): bool
     {
-        $name = $dep['plugin'] ?? '';
-        if ($name === '' || ! isset($installedMap[$name])) {
-            return false;
-        }
-        $entry = $installedMap[$name];
-        if (($entry['status'] ?? '') !== 'active') {
-            return false;
-        }
-        $min = $dep['min_version'] ?? null;
-        if ($min === null || $min === '') {
-            return true;
-        }
-        return version_compare((string) ($entry['version'] ?? '0.0.0'), (string) $min, '>=');
+        return self::classify($dep, $installedMap, [])['status'] === 'satisfied';
     }
 
     /**
@@ -45,9 +70,22 @@ class DependencyResolver extends Base
         $min    = isset($dep['min_version']) && $dep['min_version'] !== '' ? (string) $dep['min_version'] : null;
         $reason = (string) ($dep['reason'] ?? '');
 
-        $installed        = $installedMap[$name] ?? null;
+        $successor = null;
+        $installed = $name === '' ? null : ($installedMap[$name] ?? null);
+        if (($installed['status'] ?? null) !== 'active') {
+            $successor = self::successorFor($name, $installedMap, $catalog);
+            // Preserve the action for an installed original unless its successor is already active.
+            if ($successor !== null && $installed !== null && ($installedMap[$successor]['status'] ?? null) !== 'active') {
+                $successor = null;
+            }
+        }
+        if ($successor !== null) {
+            $installed = $installedMap[$successor] ?? null;
+            $min = null;
+        }
+
         $installedVersion = $installed['version'] ?? null;
-        $catalogEntry     = $catalog[$name] ?? null;
+        $catalogEntry     = $catalog[$successor ?? $name] ?? null;
         $download         = $catalogEntry['download'] ?? null;
         $catalogVersion   = $catalogEntry['version'] ?? null;
 
@@ -57,7 +95,7 @@ class DependencyResolver extends Base
         if ($installed === null) {
             $status = 'missing';
             $action = $download !== null ? 'install' : 'unresolvable';
-        } elseif (($installed['status'] ?? '') === 'disabled') {
+        } elseif (($installed['status'] ?? '') !== 'active') {
             $status = 'disabled';
             if ($min !== null && ! version_compare((string) $installedVersion, $min, '>=')) {
                 // Present but too old even once enabled → needs a newer copy.
@@ -73,8 +111,8 @@ class DependencyResolver extends Base
             $action = 'none';
         }
 
-        return [
-            'plugin'            => $name,
+        $result = [
+            'plugin'            => $status === 'satisfied' ? $name : ($successor ?? $name),
             'status'            => $status,
             'action'            => $action,
             'installed_version' => $installedVersion,
@@ -82,6 +120,10 @@ class DependencyResolver extends Base
             'reason'            => $reason,
             'download'          => in_array($action, ['install', 'update'], true) ? $download : null,
         ];
+        if ($successor !== null) {
+            $result['satisfied_by'] = $successor;
+        }
+        return $result;
     }
 
     /**
@@ -120,10 +162,11 @@ class DependencyResolver extends Base
                 continue;
             }
             foreach (($info['requires'] ?? []) as $dep) {
-                if (! is_array($dep) || ($dep['plugin'] ?? '') !== $target) {
+                if (! is_array($dep)) {
                     continue;
                 }
-                if (self::isSatisfied($dep, $installedMap)) {
+                $c = self::classify($dep, $installedMap, []);
+                if ($c['status'] === 'satisfied' && ($c['satisfied_by'] ?? $c['plugin']) === $target) {
                     $blockers[] = ['plugin' => (string) $name, 'min_version' => $dep['min_version'] ?? null];
                 }
             }
@@ -145,7 +188,7 @@ class DependencyResolver extends Base
         $plan = [];
         $seen = [];
         $this->walk($requires, $installedMap, $catalog, $plan, $seen);
-        return $plan;
+        return array_values($plan);
     }
 
     private function walk(array $requires, array $installedMap, array $catalog, array &$plan, array &$seen): void
@@ -164,16 +207,21 @@ class DependencyResolver extends Base
             if ($c['status'] === 'satisfied') {
                 continue;
             }
+            $target = $c['plugin'];
 
             // Recurse into this dep's own requires (from the catalog) FIRST, so the
             // plan is deps-first (post-order): grandchildren before children.
-            $childRequires = $catalog[$name]['requires'] ?? [];
+            $childRequires = $catalog[$target]['requires'] ?? [];
             if (is_array($childRequires) && $childRequires !== []) {
                 $this->walk($childRequires, $installedMap, $catalog, $plan, $seen);
             }
 
-            $plan[] = [
-                'plugin'      => $name,
+            // A requirement naming the successor directly can impose its own version floor.
+            if (isset($c['satisfied_by'], $plan[$target])) {
+                continue;
+            }
+            $plan[$target] = [
+                'plugin'      => $target,
                 'action'      => $c['action'],
                 'download'    => $c['download'],
                 'min_version' => $c['min_version'],
