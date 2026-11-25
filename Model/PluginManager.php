@@ -19,6 +19,9 @@ use Kanboard\Plugin\ModMenu\Exception\ModMenuException;
 class PluginManager extends Base
 {
     const SELF = 'ModMenu';
+    const MIGRATION_PLAN_CHANGED = 1;
+    const MIGRATION_PLAN_CHANGED_MESSAGE = 'The plan changed since you confirmed it. Review it again.';
+    const MIGRATION_SELF_UPDATE_MESSAGE = "A migration can't update ModMenu itself. Update ModMenu first, then migrate.";
 
     /** @var string */
     private $activeDir;
@@ -144,17 +147,58 @@ class PluginManager extends Base
     public function migrationCheck(string $old, string $successor, array $catalog): array
     {
         $map = $this->installedMap();
+        $install = ! isset($map[$successor]);
         $map[$old]['status'] = 'disabled';
         $requires = $this->installedPluginsDeps()[$successor]['requires']
             ?? self::normalizeDeps($catalog[$successor]['requires'] ?? []);
         $check = $this->forwardCheck($requires, $catalog, $map);
+        $selfUpdate = $install && $successor === self::SELF;
         foreach ($check['plan'] as $step) {
             // Dependencies cannot activate either side ahead of the switch.
             if (in_array($step['plugin'], [$old, $successor], true)) {
                 $check['blocked'] = true;
             }
+            if ($step['plugin'] === self::SELF && in_array($step['action'], ['install', 'update'], true)) {
+                $selfUpdate = true;
+            }
         }
-        return $check;
+
+        $steps = [];
+        if ($install) {
+            $steps[] = ['plugin' => $successor, 'action' => 'install', 'download' => $catalog[$successor]['download'] ?? null];
+        }
+        $steps = array_merge($steps, $check['plan']);
+        $steps[] = ['plugin' => $old, 'action' => 'disable'];
+        $steps[] = ['plugin' => $successor, 'action' => 'enable'];
+
+        $check['blocked'] = $check['blocked'] || $selfUpdate || ($install && empty($catalog[$successor]['download']));
+        return $check + [
+            'install' => $install,
+            'self_update' => $selfUpdate,
+            'plan_digest' => $this->planDigest($steps, $successor, $catalog),
+        ];
+    }
+
+    public function planDigest(array $plan, string $successor, array $catalog): string
+    {
+        $steps = [];
+        foreach ($plan as $step) {
+            $plugin = $step['plugin'];
+            $download = $step['download'] ?? null;
+            $steps[] = [
+                'plugin' => $plugin,
+                'action' => $step['action'],
+                'download' => $download,
+                'sha256' => $download === null ? null : ($catalog[$plugin]['sha256'] ?? null),
+                'min_version' => $step['min_version'] ?? null,
+            ];
+        }
+        return hash('sha256', json_encode([
+            'successor' => $successor,
+            'download' => $catalog[$successor]['download'] ?? null,
+            'sha256' => $catalog[$successor]['sha256'] ?? null,
+            'steps' => $steps,
+        ], JSON_THROW_ON_ERROR));
     }
 
     public function assertMigrationConflicts(string $old, string $successor, array $catalog): void
@@ -166,14 +210,15 @@ class PluginManager extends Base
         }
     }
 
-    public function migrate(string $old, array $catalog, bool $dependenciesConfirmed = false): string
+    public function migrate(string $old, array $catalog, bool $dependenciesConfirmed = false, ?string $confirmedDigest = null): string
     {
         $this->migrationLocks = [];
         try {
             $this->acquirePluginLock($old);
-            $successor = $this->prepareMigration($old, $catalog);
+            $successor = $this->migrationSuccessor($old);
+            $this->guardSelf($old);
             $this->acquirePluginLock($successor);
-            $this->runMigration($old, $successor, $catalog, $dependenciesConfirmed);
+            $this->runMigration($old, $successor, $catalog, $dependenciesConfirmed, $confirmedDigest);
             return $successor;
         } finally {
             foreach ($this->migrationLocks as $lock) {
@@ -183,10 +228,26 @@ class PluginManager extends Base
         }
     }
 
-    private function runMigration(string $old, string $successor, array $catalog, bool $dependenciesConfirmed): void
+    private function runMigration(string $old, string $successor, array $catalog, bool $dependenciesConfirmed, ?string $confirmedDigest): void
     {
-        $this->assertMigrationConflicts($old, $successor, $catalog);
         $check = $this->migrationCheck($old, $successor, $catalog);
+        if ($confirmedDigest !== null) {
+            if (hash_equals($check['plan_digest'], $confirmedDigest) && $check['plan'] !== []) {
+                foreach ($check['plan'] as $step) {
+                    $this->acquirePluginLock($step['plugin']);
+                }
+                // A dependency could have changed before its lock was acquired.
+                $check = $this->migrationCheck($old, $successor, $catalog);
+            }
+            if (! hash_equals($check['plan_digest'], $confirmedDigest)) {
+                throw new ModMenuException(t(self::MIGRATION_PLAN_CHANGED_MESSAGE), self::MIGRATION_PLAN_CHANGED);
+            }
+        }
+        if ($check['self_update']) {
+            throw new ModMenuException(e(self::MIGRATION_SELF_UPDATE_MESSAGE));
+        }
+        $this->prepareMigration($old, $catalog);
+        $this->assertMigrationConflicts($old, $successor, $catalog);
         if ($check['blocked'] || (! $check['satisfied'] && ! $dependenciesConfirmed)) {
             throw new ModMenuException(t('"%s" has unmet requirements.', $successor));
         }
@@ -204,7 +265,7 @@ class PluginManager extends Base
                     }
                 }, null];
             }
-            if (! isset($before[$successor])) {
+            if ($check['install']) {
                 try {
                     $this->installForMigration($catalog[$successor]['download'], $successor, $journal);
                 } catch (ModMenuException $e) {

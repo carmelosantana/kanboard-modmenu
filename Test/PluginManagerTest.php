@@ -747,6 +747,41 @@ class PluginManagerTest extends Base
         $this->manager->setArchiveDownloader($downloader);
     }
 
+    public function testPlanDigestUsesOrderedActionsAndIgnoresCatalogPresentationMetadata(): void
+    {
+        $catalog = [
+            'Harbor' => ['download' => 'https://x/harbor.zip'],
+            'Foundation' => ['sha256' => str_repeat('a', 64)],
+        ];
+        $plan = [
+            ['plugin' => 'Foundation', 'action' => 'install', 'download' => 'https://x/foundation.zip'],
+            ['plugin' => 'ThemeTools', 'action' => 'enable'],
+        ];
+        $digest = $this->manager->planDigest($plan, 'Harbor', $catalog);
+        $this->assertMatchesRegularExpression('/^[a-f0-9]{64}$/', $digest);
+        $catalog['Harbor']['description'] = 'New description';
+        $this->assertSame($digest, $this->manager->planDigest($plan, 'Harbor', array_reverse($catalog, true)));
+        $this->assertNotSame($digest, $this->manager->planDigest(array_reverse($plan), 'Harbor', $catalog));
+        $this->assertNotSame($digest, $this->manager->planDigest($plan, 'ThemeTools', $catalog));
+    }
+
+    public function testMigrationCheckBlocksInstallingOrUpdatingModMenu(): void
+    {
+        $this->seedPlugin($this->active, 'ShadcnTheme', '1.3.0', ['deprecated' => ['superseded_by' => 'Harbor']]);
+        $this->seedPlugin($this->disabled, 'Harbor', '2.0.0', [
+            'requires' => [['plugin' => 'ModMenu', 'min_version' => '9.0.0']],
+        ]);
+        $catalog = ['ModMenu' => ['download' => 'https://x/modmenu.zip', 'version' => '9.0.0']];
+        $check = $this->manager->migrationCheck('ShadcnTheme', 'Harbor', $catalog);
+        $this->assertSame('install', $check['plan'][0]['action']);
+        $this->assertTrue($check['blocked']);
+
+        $this->seedPlugin($this->active, 'ModMenu', '1.6.0');
+        $check = $this->manager->migrationCheck('ShadcnTheme', 'Harbor', $catalog);
+        $this->assertSame('update', $check['plan'][0]['action']);
+        $this->assertTrue($check['blocked']);
+    }
+
     public function testMigrateInstallsExpectedArchiveBeforeResolvingDependenciesAndSwitching()
     {
         $this->seedPlugin($this->active, 'ShadcnTheme', '1.3.0', ['deprecated' => ['superseded_by' => 'Harbor']]);

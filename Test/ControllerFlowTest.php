@@ -129,7 +129,7 @@ class ControllerFlowTest extends Base
     {
         $manager = $this->migrationFixture('Harbor', $harbor);
         $this->container['request'] = new Request($this->container, ['REQUEST_METHOD' => 'GET'], ['name' => 'ShadcnTheme']);
-        $this->controller($manager)->migrate();
+        $this->controller($manager, ['Harbor' => ['download' => 'https://x/harbor.zip']])->migrate();
 
         $this->assertCount(1, $this->bodies);
         $body = $this->bodies[0];
@@ -138,6 +138,108 @@ class ControllerFlowTest extends Base
             $this->assertStringContainsString($text, $body);
         }
         $this->assertSame($showInstall, str_contains($body, 'Install Harbor'));
+        $this->migrationDigestFrom($body);
+    }
+
+    private function migrationDigestFrom(string $body): string
+    {
+        $this->assertSame(1, preg_match('/name="plan_digest" value="([a-f0-9]{64})"/', $body, $matches));
+        return $matches[1];
+    }
+
+    private function confirmMigration(PluginManager $manager, array $catalog = []): string
+    {
+        $this->container['request'] = new Request($this->container, ['REQUEST_METHOD' => 'GET'], ['name' => 'ShadcnTheme']);
+        $this->controller($manager, $catalog)->migrate();
+        return $this->migrationDigestFrom(array_pop($this->bodies));
+    }
+
+    /** @dataProvider changedMigrationCatalogs */
+    public function testChangedOrMissingDigestReRendersThePlanWithoutDownloading(string $change): void
+    {
+        $manager = $this->migrationFixture();
+        $catalog = [
+            'Harbor' => ['download' => 'https://x/harbor.zip', 'sha256' => str_repeat('a', 64)],
+            'Foundation' => ['download' => 'https://x/foundation.zip', 'sha256' => str_repeat('b', 64)],
+        ];
+        if (str_starts_with($change, 'dependency ')) {
+            $catalog['Harbor']['requires'] = [['plugin' => 'Foundation']];
+        }
+        $downloader = $this->createMock(ArchiveDownloader::class);
+        $downloader->expects($this->never())->method('download');
+        $manager->setArchiveDownloader($downloader);
+        $before = scandir($this->migrationFixtureRoot);
+        $installed = $manager->installedMap();
+        $digest = $this->confirmMigration($manager, $catalog);
+
+        switch ($change) {
+            case 'new step':
+                $catalog['Harbor']['requires'] = [['plugin' => 'Foundation']];
+                break;
+            case 'successor URL':
+                $catalog['Harbor']['download'] = 'https://x/new-harbor.zip';
+                break;
+            case 'successor checksum':
+                $catalog['Harbor']['sha256'] = str_repeat('c', 64);
+                break;
+            case 'dependency URL':
+                $catalog['Foundation']['download'] = 'https://x/new-foundation.zip';
+                break;
+            case 'dependency checksum':
+                $catalog['Foundation']['sha256'] = str_repeat('d', 64);
+                break;
+        }
+        $post = ['name' => 'ShadcnTheme'];
+        if ($change !== 'missing') {
+            $post['plan_digest'] = $digest;
+        }
+        $hasDependencies = str_starts_with($change, 'dependency ');
+        if ($hasDependencies) {
+            $post['action'] = 'migrate';
+        }
+        $this->post($post);
+        $controller = $this->controller($manager, $catalog);
+        $hasDependencies ? $controller->resolve() : $controller->runMigrate();
+
+        $this->assertSame(['failure' => 'The plan changed since you confirmed it. Review it again.'], $this->flashes);
+        $this->assertSame([], $this->redirects);
+        $this->assertCount(1, $this->bodies);
+        $newDigest = $this->migrationDigestFrom($this->bodies[0]);
+        if ($change === 'missing') {
+            $this->assertSame($digest, $newDigest);
+        } else {
+            $this->assertNotSame($digest, $newDigest);
+        }
+        $this->assertSame($hasDependencies || $change === 'new step', str_contains($this->bodies[0], 'Install Foundation'));
+        $this->assertSame($before, scandir($this->migrationFixtureRoot));
+        $this->assertSame($installed, $manager->installedMap());
+    }
+
+    public static function changedMigrationCatalogs(): array
+    {
+        $changes = ['missing', 'new step', 'successor URL', 'successor checksum', 'dependency URL', 'dependency checksum'];
+        return array_combine($changes, array_map(static fn ($change) => [$change], $changes));
+    }
+
+    public function testRunMigrateRefusesModMenuUpdateBeforeAnyDiskChange(): void
+    {
+        $manager = $this->migrationFixture('Harbor', ['requires' => [['plugin' => 'ModMenu', 'min_version' => '9.0.0']]]);
+        $root = $this->migrationFixtureRoot;
+        mkdir($root . '/active/ModMenu');
+        file_put_contents($root . '/active/ModMenu/Plugin.php', '<?php');
+        $before = scandir($root);
+        $installed = $manager->installedMap();
+        $catalog = ['ModMenu' => ['download' => 'https://x/modmenu.zip', 'version' => '9.0.0']];
+        $downloader = $this->createMock(ArchiveDownloader::class);
+        $downloader->expects($this->never())->method('download');
+        $manager->setArchiveDownloader($downloader);
+
+        $this->post(['name' => 'ShadcnTheme', 'action' => 'migrate']);
+        $this->controller($manager, $catalog)->resolve();
+
+        $this->assertSame(['failure' => "A migration can't update ModMenu itself. Update ModMenu first, then migrate."], $this->flashes);
+        $this->assertSame($before, scandir($root));
+        $this->assertSame($installed, $manager->installedMap());
     }
 
     public function testRunMigrateWithoutCsrfChangesNothing()
@@ -193,13 +295,28 @@ class ControllerFlowTest extends Base
 
     public function testRunMigrateWithoutCatalogEntryChangesNothing()
     {
-        $this->assertMigrationFailure($this->migrationFixture(), 'Harbor is not in the plugin directory, so nothing changed.');
+        $manager = $this->migrationFixture();
+        $catalog = ['Harbor' => ['download' => 'https://x/harbor.zip']];
+        $digest = $this->confirmMigration($manager, $catalog);
+        $before = $manager->installedMap();
+        $this->post(['name' => 'ShadcnTheme', 'plan_digest' => $digest]);
+        $this->controller($manager)->runMigrate();
+
+        $this->assertSame(['failure' => 'The plan changed since you confirmed it. Review it again.'], $this->flashes);
+        $this->assertCount(1, $this->bodies);
+        $this->assertStringContainsString('Harbor is not in the plugin directory, so nothing changed.', $this->bodies[0]);
+        $this->assertStringNotContainsString('name="plan_digest"', $this->bodies[0]);
+        $this->assertSame($before, $manager->installedMap());
     }
 
     private function assertMigrationFailure(PluginManager $manager, string $message, array $catalog = []): void
     {
         $before = $manager->installedMap();
-        $this->post(['name' => 'ShadcnTheme']);
+        $post = ['name' => 'ShadcnTheme'];
+        if ($catalog !== []) {
+            $post['plan_digest'] = $this->confirmMigration($manager, $catalog);
+        }
+        $this->post($post);
         $this->controller($manager, $catalog)->runMigrate();
 
         $this->assertSame(['failure' => $message], $this->flashes);
@@ -209,7 +326,8 @@ class ControllerFlowTest extends Base
     public function testRunMigrateUsesInstalledSuccessorAndRedirectsToInstalled()
     {
         $manager = $this->migrationFixture('Harbor', []);
-        $this->post(['name' => 'ShadcnTheme', 'successor' => 'Other', 'archive_url' => 'https://x/other.zip']);
+        $digest = $this->confirmMigration($manager);
+        $this->post(['name' => 'ShadcnTheme', 'successor' => 'Other', 'archive_url' => 'https://x/other.zip', 'plan_digest' => $digest]);
         $this->controller($manager)->runMigrate();
 
         $this->assertSame(['success' => 'Migrated ShadcnTheme to Harbor. ShadcnTheme stays installed but disabled.'], $this->flashes);
@@ -226,15 +344,16 @@ class ControllerFlowTest extends Base
         mkdir($foundation);
         file_put_contents($foundation . '/Plugin.php', '<?php');
         $before = $manager->installedMap();
-        $this->post(['name' => 'ShadcnTheme']);
-        $this->controller($manager)->runMigrate();
+        $this->container['request'] = new Request($this->container, ['REQUEST_METHOD' => 'GET'], ['name' => 'ShadcnTheme']);
+        $this->controller($manager)->migrate();
 
         $this->assertCount(1, $this->bodies);
         $this->assertStringContainsString('Resolve dependencies', $this->bodies[0]);
         $this->assertStringContainsString('Enable Foundation', $this->bodies[0]);
         $this->assertSame($before, $manager->installedMap());
 
-        $this->post(['name' => 'ShadcnTheme', 'action' => 'migrate']);
+        $digest = $this->migrationDigestFrom($this->bodies[0]);
+        $this->post(['name' => 'ShadcnTheme', 'action' => 'migrate', 'plan_digest' => $digest]);
         $this->controller($manager)->resolve();
 
         $installed = $manager->installedMap();
@@ -260,7 +379,8 @@ class ControllerFlowTest extends Base
         }
         $this->assertNotEmpty($manager->migrationCheck('ShadcnTheme', 'Harbor', [])['plan']);
         $before = $manager->installedMap();
-        $this->post(['name' => 'ShadcnTheme', 'action' => 'migrate']);
+        $digest = $this->confirmMigration($manager);
+        $this->post(['name' => 'ShadcnTheme', 'action' => 'migrate', 'plan_digest' => $digest]);
         $this->controller($manager)->runMigrate();
 
         $this->assertSame(['failure' => 'Harbor conflicts with OtherTheme. Disable them first.'], $this->flashes);
@@ -305,6 +425,7 @@ class ControllerFlowTest extends Base
         foreach (['Resolve dependencies', 'Enable Foundation', 'Install Harbor', 'Cancel'] as $text) {
             $this->assertStringContainsString($text, $this->bodies[0]);
         }
+        $digest = $this->migrationDigestFrom($this->bodies[0]);
 
         // Cancel navigates to the Installed tab.
         $this->container['request'] = new Request($this->container, ['REQUEST_METHOD' => 'GET'], []);
@@ -312,14 +433,21 @@ class ControllerFlowTest extends Base
         $this->assertSame($before, $snapshot());
 
         $blocked = array_replace($entry, ['requires' => [['plugin' => 'Unavailable']]]);
+        $this->post(['name' => 'ShadcnTheme', 'action' => 'migrate', 'plan_digest' => $digest]);
+        $this->controller($manager, ['Harbor' => $blocked])->resolve();
+        $this->assertSame(['failure' => 'The plan changed since you confirmed it. Review it again.'], $this->flashes);
+        $blockedBody = $this->bodies[array_key_last($this->bodies)];
+        $this->assertStringContainsString('&quot;Harbor&quot; has requirements that cannot be installed automatically.', $blockedBody);
+        $this->assertStringNotContainsString('name="plan_digest"', $blockedBody);
+        $this->assertSame($before, $snapshot());
+
         $cases = [
-            [$blocked, t('"%s" has requirements that cannot be installed automatically. Install them manually first.', 'Harbor')],
             [$entry + ['conflicts' => ['OtherTheme']], 'Harbor conflicts with OtherTheme. Disable them first.'],
             [array_replace($entry, ['replaces' => ['OtherTheme']]), 'Harbor conflicts with OtherTheme. Disable them first.'],
         ];
         foreach ($cases as [$catalogEntry, $message]) {
-            $this->post(['name' => 'ShadcnTheme']);
-            $this->controller($manager, ['Harbor' => $catalogEntry])->runMigrate();
+            $this->post(['name' => 'ShadcnTheme', 'action' => 'migrate', 'plan_digest' => $digest]);
+            $this->controller($manager, ['Harbor' => $catalogEntry])->resolve();
             $this->assertSame(['failure' => $message], $this->flashes);
             $this->assertSame($before, $snapshot());
         }
@@ -353,7 +481,8 @@ class ControllerFlowTest extends Base
         file_put_contents($root . '/disabled/ShadcnTheme', 'keep');
         $before = $manager->installedMap();
 
-        $this->post(['name' => 'ShadcnTheme', 'action' => 'migrate']);
+        $digest = $this->confirmMigration($manager);
+        $this->post(['name' => 'ShadcnTheme', 'action' => 'migrate', 'plan_digest' => $digest]);
         $this->controller($manager)->resolve();
 
         $this->assertSame(['failure' => "Couldn't migrate ShadcnTheme to Harbor, so nothing changed. " .
@@ -396,10 +525,10 @@ class ControllerFlowTest extends Base
         $manager->setArchiveDownloader($downloader);
         $activeBefore = scandir($root . '/active');
 
-        $this->post(['name' => 'ShadcnTheme', 'action' => 'migrate']);
-        $this->controller($manager, [
-            'Foundation' => ['download' => 'https://x/foundation.zip'],
-        ])->resolve();
+        $catalog = ['Foundation' => ['download' => 'https://x/foundation.zip']];
+        $digest = $this->confirmMigration($manager, $catalog);
+        $this->post(['name' => 'ShadcnTheme', 'action' => 'migrate', 'plan_digest' => $digest]);
+        $this->controller($manager, $catalog)->resolve();
 
         $this->assertStringStartsWith("Couldn't fully roll back the migration from ShadcnTheme to Harbor.", $this->flashes['failure']);
         $this->assertStringContainsString('enable Harbor', $this->flashes['failure']);

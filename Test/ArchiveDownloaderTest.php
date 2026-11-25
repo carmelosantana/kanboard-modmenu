@@ -219,31 +219,102 @@ class ArchiveDownloaderTest extends TestCase
         }
     }
 
-    public function testEachHopUsesTheTimeoutsForItsDownloadType(): void
+    public function testRedirectBodiesCountTowardsTheArchiveLimit(): void
     {
-        $timeouts = [];
+        $before = $this->tempFiles();
+        $calls = 0;
         $downloader = new ArchiveDownloader(
-            static fn () => ['140.82.112.3'],
-            static function ($url, $address, $header, $write, $headers, $timeout = null, $connectTimeout = null) use (&$timeouts) {
-                $timeouts[] = [$url, $timeout, $connectTimeout];
-                if ($url === 'https://downloads.example/redirect') {
-                    return [302, 'https://assets.example/file'];
+            fn () => ['140.82.112.3'],
+            function ($url, $address, $header, $write) use (&$calls) {
+                ++$calls;
+                $chunk = str_repeat('x', 1024 * 1024);
+                for ($mb = 0; $mb < 40; ++$mb) {
+                    $expected = $calls === 2 && $mb === 10 ? 0 : strlen($chunk);
+                    $this->assertSame($expected, $this->invokeCallback($write, $chunk));
+                    if ($expected === 0) {
+                        return [0, null];
+                    }
                 }
-                $write(null, '[]');
-                return [200, null];
+                return $calls < 6 ? [302, 'https://downloads.example/hop-' . $calls] : [200, null];
             }
         );
 
-        $path = $downloader->download('https://downloads.example/redirect');
-        unlink($path);
-        $this->assertSame([], $downloader->fetchJson('https://downloads.example/redirect'));
+        $this->assertRefused($downloader, 'The plugin archive is larger than 50 MB.');
+        $this->assertSame(2, $calls);
+        $this->assertSame($before, $this->tempFiles());
+    }
 
-        $this->assertSame([
-            ['https://downloads.example/redirect', 120, 10],
-            ['https://assets.example/file', 120, 10],
-            ['https://downloads.example/redirect', 15, 5],
-            ['https://assets.example/file', 15, 5],
-        ], $timeouts);
+    public function testCatalogHeaderUsesRemainingBytesAcrossRedirects(): void
+    {
+        $before = $this->tempFiles();
+        $downloader = new ArchiveDownloader(
+            fn () => ['140.82.112.3'],
+            function ($url, $address, $header, $write) {
+                if ($url === 'https://downloads.example/redirect') {
+                    $chunk = str_repeat('x', 3 * 1024 * 1024);
+                    $this->assertSame(strlen($chunk), $this->invokeCallback($write, $chunk));
+                    return [302, 'https://downloads.example/file'];
+                }
+                $this->assertSame(0, $this->invokeCallback($header, "Content-Length: 3145728\r\n"));
+                return [0, null];
+            }
+        );
+
+        try {
+            $downloader->fetchJson('https://downloads.example/redirect');
+            $this->fail('Expected the listing to exceed its remaining byte budget.');
+        } catch (ModMenuException $e) {
+            $this->assertSame('The directory listing is larger than 5 MB.', $e->getMessage());
+        }
+        $this->assertSame($before, $this->tempFiles());
+    }
+
+    /** @dataProvider redirectDeadlines */
+    public function testRedirectsUseOneDeadlineIncludingAddressResolution(string $method, int $total, int $connect, string $message): void
+    {
+        $before = $this->tempFiles();
+        $now = 0;
+        $calls = 0;
+        $downloader = new ArchiveDownloader(
+            static function () use (&$now) {
+                $now += 1;
+                return ['140.82.112.3'];
+            },
+            function ($url, $address, $header, $write, $headers, $timeout, $connectTimeout) use (&$now, &$calls, $total, $connect) {
+                if (++$calls === 1) {
+                    $this->assertSame($total - 1, $timeout);
+                    $this->assertSame($connect, $connectTimeout);
+                    $now = $total - 2001;
+                    return [302, 'https://assets.example/file'];
+                }
+                $this->assertSame(2000, $timeout);
+                $this->assertSame(2000, $connectTimeout);
+                $now = $total;
+                $this->assertSame(0, $this->invokeCallback($header, "HTTP/2 200\r\n"));
+                $this->assertSame(0, $this->invokeCallback($write, '[]'));
+                return [0, null];
+            },
+            static function () use (&$now): int {
+                return $now;
+            }
+        );
+
+        try {
+            $downloader->$method('https://downloads.example/redirect');
+            $this->fail('Expected the transfer to exceed the deadline.');
+        } catch (ModMenuException $e) {
+            $this->assertSame($message, $e->getMessage());
+        }
+        $this->assertSame(2, $calls);
+        $this->assertSame($before, $this->tempFiles());
+    }
+
+    public static function redirectDeadlines(): array
+    {
+        return [
+            'archive' => ['download', 120000, 10000, 'Unable to download the plugin archive.'],
+            'catalog' => ['fetchJson', 15000, 5000, "Couldn't load this directory listing."],
+        ];
     }
 
     public function testCatalogContentLengthOverCapAbortsBeforeBody(): void

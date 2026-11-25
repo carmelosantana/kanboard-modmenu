@@ -15,18 +15,21 @@ class ArchiveDownloader
 
     private Closure $resolver;
     private ?Closure $transport;
+    private Closure $clock;
 
     /**
      * @param callable(string): string[]|null $resolver Resolves all A and AAAA addresses.
      * @param callable|null $transport Receives URL, pinned IP, curl header and write callbacks, request headers,
-     *                                 and total and connect timeouts in seconds.
+     *                                 and total and connect timeouts in milliseconds.
      *                                 Returns [status, absolute redirect URL or null], with status 0 on transfer failure.
+     * @param callable(): int|null $clock Monotonic time in milliseconds.
      */
-    public function __construct(?callable $resolver = null, ?callable $transport = null)
+    public function __construct(?callable $resolver = null, ?callable $transport = null, ?callable $clock = null)
     {
         $this->resolver = Closure::fromCallable($resolver ?? static fn (string $host): array =>
             self::resolveHost($host, \dns_get_record(...), \gethostbynamel(...)));
         $this->transport = $transport === null ? null : Closure::fromCallable($transport);
+        $this->clock = Closure::fromCallable($clock ?? static fn (): int => (int) (hrtime(true) / 1_000_000));
     }
 
     public static function isPublicAddress(string $ip): bool
@@ -63,8 +66,8 @@ class ArchiveDownloader
             PluginArchive::MAX_ARCHIVE_BYTES,
             t('The plugin archive is larger than 50 MB.'),
             t('Unable to download the plugin archive.'),
-            timeout: 120,
-            connectTimeout: 10
+            timeout: 120_000,
+            connectTimeout: 10_000
         );
     }
 
@@ -76,8 +79,8 @@ class ArchiveDownloader
             self::MAX_DIRECTORY_BYTES,
             t('The directory listing is larger than 5 MB.'),
             $failureMessage,
-            timeout: 15,
-            connectTimeout: 5,
+            timeout: 15_000,
+            connectTimeout: 5_000,
             headers: ['Accept: application/json']
         );
         try {
@@ -103,6 +106,8 @@ class ArchiveDownloader
         int $connectTimeout,
         array $headers = []
     ): string {
+        $deadline = ($this->clock)() + $timeout;
+        $remaining = fn (): int => $deadline - ($this->clock)();
         $url = self::checkedUrl($url);
         if ($this->transport === null && ! extension_loaded('curl')) {
             throw new ModMenuException(t('Plugin downloads need the PHP curl extension.'));
@@ -122,38 +127,59 @@ class ArchiveDownloader
             }
 
             $bytes = 0;
+            $bodyBytes = 0;
             $failure = null;
             // Returning a short count stops curl immediately. Report the cause after the transfer.
-            $header = static function ($curl, string $line) use ($maxBytes, $oversizeMessage, &$failure): int {
+            $canContinue = static function () use ($remaining, $failureMessage, &$failure): bool {
+                if ($remaining() <= 0) {
+                    $failure ??= $failureMessage;
+                }
+                return $failure === null;
+            };
+            $header = static function ($curl, string $line) use ($canContinue, $maxBytes, $oversizeMessage, &$bytes, &$failure): int {
+                if (! $canContinue()) {
+                    return 0;
+                }
                 if (preg_match('/^Content-Length:[ \t]*([0-9]+)[ \t]*\r?\n$/iD', $line, $matches)
-                    && (int) $matches[1] > $maxBytes) {
-                    $failure = new ModMenuException($oversizeMessage);
+                    && (int) $matches[1] > $maxBytes - $bytes) {
+                    $failure = $oversizeMessage;
                     return 0;
                 }
                 return strlen($line);
             };
-            $write = static function ($curl, string $chunk) use ($file, $maxBytes, $oversizeMessage, $failureMessage, &$bytes, &$failure): int {
+            $write = static function ($curl, string $chunk) use ($canContinue, $file, $maxBytes, $oversizeMessage, $failureMessage, &$bytes, &$bodyBytes, &$failure): int {
+                if (! $canContinue()) {
+                    return 0;
+                }
                 $length = strlen($chunk);
                 if ($length > $maxBytes - $bytes) {
-                    $failure = new ModMenuException($oversizeMessage);
+                    $failure = $oversizeMessage;
                     return 0;
                 }
                 if (@fwrite($file, $chunk) !== $length) {
-                    $failure = new ModMenuException($failureMessage);
+                    $failure = $failureMessage;
                     return 0;
                 }
                 $bytes += $length;
+                $bodyBytes += $length;
                 return $length;
             };
 
             for ($redirects = 0; ; $redirects++) {
+                if ($remaining() <= 0) {
+                    throw new ModMenuException($failureMessage);
+                }
                 $address = $this->checkedAddress(parse_url($url, PHP_URL_HOST));
-                [$status, $location] = $transport($url, $address, $header, $write, $headers, $timeout, $connectTimeout);
-                if ($failure !== null) {
-                    throw $failure;
+                $timeLeft = $remaining();
+                if ($timeLeft <= 0) {
+                    throw new ModMenuException($failureMessage);
+                }
+                [$status, $location] = $transport($url, $address, $header, $write, $headers, $timeLeft, min($connectTimeout, $timeLeft));
+                if (! $canContinue()) {
+                    throw new ModMenuException($failure);
                 }
 
-                if ($status >= 200 && $status < 300 && $bytes > 0) {
+                if ($status >= 200 && $status < 300 && $bodyBytes > 0) {
                     $keep = true;
                     return $path;
                 }
@@ -165,10 +191,10 @@ class ArchiveDownloader
                 }
 
                 $url = self::checkedUrl($location);
-                if ($bytes > 0 && (! @ftruncate($file, 0) || ! @rewind($file))) {
+                if ($bodyBytes > 0 && (! @ftruncate($file, 0) || ! @rewind($file))) {
                     throw new ModMenuException($failureMessage);
                 }
-                $bytes = 0;
+                $bodyBytes = 0;
             }
         } finally {
             if ($file !== false) {
@@ -243,8 +269,8 @@ class ArchiveDownloader
             CURLOPT_REDIR_PROTOCOLS => CURLPROTO_HTTPS,
             // A proxy would resolve the destination independently of the pin.
             CURLOPT_PROXY => '',
-            CURLOPT_CONNECTTIMEOUT => $connectTimeout,
-            CURLOPT_TIMEOUT => $timeout,
+            CURLOPT_CONNECTTIMEOUT_MS => $connectTimeout,
+            CURLOPT_TIMEOUT_MS => $timeout,
             CURLOPT_USERAGENT => Client::HTTP_USER_AGENT,
             CURLOPT_HTTPHEADER => $headers,
             CURLOPT_HEADERFUNCTION => $header,

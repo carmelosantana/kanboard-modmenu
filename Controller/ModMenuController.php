@@ -154,18 +154,32 @@ class ModMenuController extends BaseController
         $manager = $this->manager();
         try {
             $successor = $manager->migrationSuccessor($name);
+            $catalog = $this->catalog();
+            $this->renderMigrationConfirmation($name, $successor, $catalog, $manager->migrationCheck($name, $successor, $catalog));
         } catch (ModMenuException $e) {
             $this->flash->failure($e->getMessage());
             $this->backToInstalled();
-            return;
         }
+    }
 
+    private function renderMigrationConfirmation(string $name, string $successor, array $catalog, array $check): void
+    {
+        $blockedReason = null;
+        if ($check['self_update']) {
+            $blockedReason = e(PluginManager::MIGRATION_SELF_UPDATE_MESSAGE);
+        } elseif ($check['install'] && empty($catalog[$successor]['download'])) {
+            $blockedReason = t('%s is not in the plugin directory, so nothing changed.', $successor);
+        } elseif ($check['blocked']) {
+            $blockedReason = t('"%s" has requirements that cannot be installed automatically. Install them manually first.', $successor);
+        }
         $this->response->html($this->helper->layout->config('ModMenu:plugin/migrate', [
             'title' => t('ModMenu'),
             'name' => $name,
             'successor' => $successor,
-            'install' => ! isset($manager->installedMap()[$successor]),
-            'plan' => [],
+            'install' => $check['install'],
+            'plan' => $check['plan'],
+            'plan_digest' => $check['plan_digest'],
+            'blocked_reason' => $blockedReason,
         ]));
     }
 
@@ -180,27 +194,41 @@ class ModMenuController extends BaseController
         $manager = $this->manager();
 
         try {
-            $manager->migrationSuccessor($name);
+            $successor = $manager->migrationSuccessor($name);
             $catalog = $this->catalog();
-            $successor = $manager->prepareMigration($name, $catalog);
             $check = $manager->migrationCheck($name, $successor, $catalog);
+            if ($check['self_update']) {
+                throw new ModMenuException(e(PluginManager::MIGRATION_SELF_UPDATE_MESSAGE));
+            }
+            $digest = $this->request->getRawValue('plan_digest');
+            if (! is_string($digest) || ! hash_equals($check['plan_digest'], $digest)) {
+                $this->flash->failure(t(PluginManager::MIGRATION_PLAN_CHANGED_MESSAGE));
+                $this->renderMigrationConfirmation($name, $successor, $catalog, $check);
+                return;
+            }
+
+            $manager->prepareMigration($name, $catalog);
             $manager->assertMigrationConflicts($name, $successor, $catalog);
             if ($check['blocked']) {
                 throw new ModMenuException(t('"%s" has requirements that cannot be installed automatically. Install them manually first.', $successor));
             }
             $dependenciesConfirmed = $this->postValue('action') === 'migrate';
             if (! $check['satisfied'] && ! $dependenciesConfirmed) {
-                $this->response->html($this->helper->layout->config('ModMenu:plugin/migrate', [
-                    'title' => t('ModMenu'),
-                    'name' => $name,
-                    'successor' => $successor,
-                    'install' => ! isset($manager->installedMap()[$successor]),
-                    'plan' => $check['plan'],
-                ]));
+                $this->renderMigrationConfirmation($name, $successor, $catalog, $check);
                 return;
             }
 
-            $successor = $manager->migrate($name, $catalog, $dependenciesConfirmed);
+            try {
+                $successor = $manager->migrate($name, $catalog, $dependenciesConfirmed, $digest);
+            } catch (ModMenuException $e) {
+                if ($e->getCode() !== PluginManager::MIGRATION_PLAN_CHANGED) {
+                    throw $e;
+                }
+                $successor = $manager->migrationSuccessor($name);
+                $this->flash->failure($e->getMessage());
+                $this->renderMigrationConfirmation($name, $successor, $catalog, $manager->migrationCheck($name, $successor, $catalog));
+                return;
+            }
             $this->flash->success(t('Migrated %s to %s. %s stays installed but disabled.', $name, $successor, $name));
         } catch (ModMenuException $e) {
             $this->flash->failure($e->getMessage());
