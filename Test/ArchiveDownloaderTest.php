@@ -219,6 +219,29 @@ class ArchiveDownloaderTest extends TestCase
         }
     }
 
+    public function testCatalogContentLengthOverCapAbortsBeforeBody(): void
+    {
+        $before = $this->tempFiles();
+        $downloader = new ArchiveDownloader(
+            fn () => ['140.82.112.3'],
+            function ($url, $address, $header) use ($before) {
+                $path = $this->newTempFile($before);
+                $line = 'Content-Length: ' . (5 * 1024 * 1024 + 1) . "\r\n";
+                $this->assertSame(0, $this->invokeCallback($header, $line));
+                $this->assertSame(0, filesize($path));
+                return [0, null];
+            }
+        );
+
+        try {
+            $downloader->fetchJson('https://downloads.example/plugins.json');
+            $this->fail('Expected the listing to be refused.');
+        } catch (ModMenuException $e) {
+            $this->assertSame('The directory listing is larger than 5 MB.', $e->getMessage());
+        }
+        $this->assertSame($before, $this->tempFiles());
+    }
+
     private function invokeCallback(callable $callback, string $data): mixed
     {
         try {

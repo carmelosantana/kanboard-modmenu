@@ -2,9 +2,9 @@
 
 require_once 'tests/units/Base.php';
 
-use Kanboard\Core\Http\Client;
 use Kanboard\Core\Http\Response;
 use Kanboard\Plugin\ModMenu\Controller\ModMenuController;
+use Kanboard\Plugin\ModMenu\Model\ArchiveDownloader;
 use Kanboard\Plugin\ModMenu\Model\PluginManager;
 use KanboardTests\units\Base;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -104,9 +104,14 @@ class InstalledTemplateTest extends Base
             $this->container['route']->enable();
             $this->container['route']->addRoute('config/modmenu/plugin/migrate', 'ModMenuController', 'migrate', 'ModMenu');
 
-            $http = $this->createMock(Client::class);
-            $http->expects($this->never())->method('getJson');
-            $this->container['httpClient'] = $http;
+            $requests = [];
+            $this->container['modMenuDirectoryDownloader'] = new ArchiveDownloader(
+                static fn () => ['140.82.112.3'],
+                static function ($url) use (&$requests) {
+                    $requests[] = $url;
+                    return [500, null];
+                }
+            );
 
             $body = '';
             $response = $this->createMock(Response::class);
@@ -122,6 +127,7 @@ class InstalledTemplateTest extends Base
             $controller->expects($this->never())->method('catalog');
             $controller->show();
 
+            $this->assertSame([], $requests);
             $this->assertStringContainsString('<strong>Plain</strong>', $body);
             $this->assertSame(1, substr_count($body, 'Replaced by '));
             $this->assertStringContainsString('Replaced by Harbor.', $body);

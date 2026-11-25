@@ -3,9 +3,9 @@
 require_once 'tests/units/Base.php';
 
 use KanboardTests\units\Base;
-use Kanboard\Core\Http\Client;
 use Kanboard\Core\Http\Response;
 use Kanboard\Plugin\ModMenu\Controller\ModMenuController;
+use Kanboard\Plugin\ModMenu\Model\ArchiveDownloader;
 use Kanboard\Plugin\ModMenu\Model\PluginManager;
 
 /**
@@ -186,13 +186,18 @@ class BrowseToolbarTemplateTest extends Base
     public function testInstalledDeprecatedPluginStillAppearsInBrowseUpdates()
     {
         session_set('user', $this->container['userModel']->getById(1));
-        $http = $this->createMock(Client::class);
-        $http->method('getJson')->willReturn([[
+        $listing = [[
             'name' => 'ShadcnTheme', 'version' => '1.3.0',
             'deprecated' => ['superseded_by' => 'Harbor', 'since' => '1.3.0'],
             'download' => 'https://example.com/shadcn.zip',
-        ]]);
-        $this->container['httpClient'] = $http;
+        ]];
+        $this->container['modMenuDirectoryDownloader'] = new ArchiveDownloader(
+            static fn () => ['140.82.112.3'],
+            static function ($url, $address, $header, $write) use ($listing) {
+                $write(null, json_encode($listing));
+                return [200, null];
+            }
+        );
 
         $manager = $this->getMockBuilder(PluginManager::class)
             ->setConstructorArgs([$this->container])->onlyMethods(['listInstalled', 'isConfigured'])->getMock();

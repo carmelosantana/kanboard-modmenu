@@ -3,6 +3,7 @@
 require_once 'tests/units/Base.php';
 
 use KanboardTests\units\Base;
+use Kanboard\Plugin\ModMenu\Model\ArchiveDownloader;
 use Kanboard\Plugin\ModMenu\Model\DirectoryClient;
 use Kanboard\Plugin\ModMenu\Model\SourceRepository;
 
@@ -26,10 +27,13 @@ class DirectoryClientTest extends Base
         ]);
         $this->container['memoryCache']->flush();
         $fetched = [];
-        $this->container['httpClient']->method('getJson')->willReturnCallback(
-            static function ($url) use (&$fetched, $secure, $sha256) {
+        $this->container['httpClient']->expects($this->never())->method('getJson');
+        $this->container['modMenuDirectoryDownloader'] = new ArchiveDownloader(
+            static fn () => ['140.82.112.3'],
+            static function ($url, $address, $header, $write) use (&$fetched, $sha256) {
                 $fetched[] = $url;
-                return $url === $secure ? [['name' => 'Alpha', 'sha256' => $sha256]] : [];
+                $write(null, json_encode([['name' => 'Alpha', 'sha256' => $sha256]]));
+                return [200, null];
             }
         );
 
@@ -43,6 +47,100 @@ class DirectoryClientTest extends Base
             'message' => 'Skipped: directory sources must use https://. Remove this source and add it again over https.',
         ], $insecure), $result['errors']);
         $this->assertSame([$insecure[0], $secure, $insecure[1]], (new SourceRepository($this->container))->getSources());
+    }
+
+    public function testFetchAllChecksRedirectHopsAndContinuesAfterSourceFailures(): void
+    {
+        $http = 'https://catalog.example/http';
+        $private = 'https://catalog.example/private';
+        $loop = 'https://catalog.example/loop';
+        $invalid = 'https://catalog.example/invalid';
+        $valid = 'https://catalog.example/valid';
+        $cdn = 'https://assets.example/plugins.json';
+        $this->container['configModel']->save([
+            SourceRepository::CONFIG_KEY => json_encode([$http, $private, $loop, $invalid, $valid]),
+        ]);
+        $this->container['memoryCache']->flush();
+        $this->container['httpClient']->expects($this->never())->method('getJson');
+        $addresses = [
+            'catalog.example' => '140.82.112.3',
+            'assets.example' => '2606:50c0:8000::153',
+            'private.example' => '127.0.0.1',
+        ];
+        $requests = [];
+        $before = glob(sys_get_temp_dir() . '/modmenu_dl*');
+        $this->container['modMenuDirectoryDownloader'] = new ArchiveDownloader(
+            static fn ($host) => [$addresses[$host]],
+            static function ($url, $address, $header, $write) use (&$requests, $http, $private, $loop, $invalid, $valid, $cdn) {
+                $requests[] = [$url, $address];
+                switch ($url) {
+                    case $http:
+                        return [302, 'http://assets.example/plugins.json'];
+                    case $private:
+                        return [302, 'https://private.example/plugins.json'];
+                    case $loop:
+                        return [302, $loop];
+                    case $valid:
+                        return [302, $cdn];
+                    case $invalid:
+                        $write(null, '{');
+                        return [200, null];
+                    case $cdn:
+                        $write(null, '[{"name":"Alpha"}]');
+                        return [200, null];
+                }
+                return [500, null];
+            }
+        );
+
+        $result = $this->client->fetchAll();
+
+        $this->assertSame([
+            [$http, $addresses['catalog.example']],
+            [$private, $addresses['catalog.example']],
+            ...array_fill(0, 6, [$loop, $addresses['catalog.example']]),
+            [$invalid, $addresses['catalog.example']],
+            [$valid, $addresses['catalog.example']],
+            [$cdn, $addresses['assets.example']],
+        ], $requests);
+        $this->assertSame([
+            ['url' => $http, 'message' => 'The download URL must be a valid https:// URL.'],
+            ['url' => $private, 'message' => 'The download was refused: private.example is not a public address.'],
+            ['url' => $loop, 'message' => 'Too many redirects while downloading the plugin archive.'],
+            ['url' => $invalid, 'message' => 'Syntax error'],
+        ], $result['errors']);
+        $this->assertSame(['Alpha'], array_column($result['plugins'], 'name'));
+        $this->assertSame([$valid], array_column($result['plugins'], 'source_url'));
+        $this->assertSame($before, glob(sys_get_temp_dir() . '/modmenu_dl*'));
+    }
+
+    public function testFetchAllRejectsAnOversizedListingWhileStreaming(): void
+    {
+        $url = 'https://catalog.example/plugins.json';
+        $this->container['configModel']->save([SourceRepository::CONFIG_KEY => json_encode([$url])]);
+        $this->container['memoryCache']->flush();
+        $this->container['httpClient']->expects($this->never())->method('getJson');
+        $before = glob(sys_get_temp_dir() . '/modmenu_dl*');
+        $this->container['modMenuDirectoryDownloader'] = new ArchiveDownloader(
+            static fn () => ['140.82.112.3'],
+            function ($url, $address, $header, $write) use ($before) {
+                $paths = array_values(array_diff(glob(sys_get_temp_dir() . '/modmenu_dl*'), $before));
+                $this->assertCount(1, $paths);
+                $chunk = str_repeat(' ', 1024 * 1024);
+                for ($i = 0; $i < 5; $i++) {
+                    $this->assertSame(strlen($chunk), $write(null, $chunk));
+                }
+                $this->assertSame(0, $write(null, 'x'));
+                $this->assertSame(5 * 1024 * 1024, filesize($paths[0]));
+                return [0, null];
+            }
+        );
+
+        $this->assertSame([
+            'plugins' => [],
+            'errors' => [['url' => $url, 'message' => 'The directory listing is larger than 5 MB.']],
+        ], $this->client->fetchAll());
+        $this->assertSame($before, glob(sys_get_temp_dir() . '/modmenu_dl*'));
     }
 
     public function testResolveAssetUrlKeepsAbsolute()

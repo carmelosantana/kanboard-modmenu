@@ -8,9 +8,6 @@ use Kanboard\Core\Base;
  * Fetches plugin listings from configured directory sources and annotates each
  * entry with its install status relative to what is on this server, and each
  * declared requirement with its state (requires_state) against the installed map.
- *
- * The pure methods (annotate/merge/resolveAssetUrl) hold all the logic and are
- * unit-tested; fetchAll() is the thin network wrapper exercised by live E2E.
  */
 class DirectoryClient extends Base
 {
@@ -174,6 +171,7 @@ class DirectoryClient extends Base
         $sourceRepo = new SourceRepository($this->container);
         $manager = new PluginManager($this->container);
         $installedMap = $manager->installedMap();
+        $downloader = $this->container['modMenuDirectoryDownloader'] ?? new ArchiveDownloader();
 
         $sourcesData = [];
         $errors = [];
@@ -184,8 +182,7 @@ class DirectoryClient extends Base
                 continue;
             }
             try {
-                $json = $this->httpClient->getJson($url);
-                $sourcesData[] = ['url' => $url, 'plugins' => is_array($json) ? $json : []];
+                $sourcesData[] = ['url' => $url, 'plugins' => $downloader->fetchJson($url)];
             } catch (\Throwable $e) {
                 $errors[] = ['url' => $url, 'message' => $e->getMessage()];
             }

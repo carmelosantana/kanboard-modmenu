@@ -6,17 +6,18 @@ use Closure;
 use Kanboard\Core\Http\Client;
 use Kanboard\Plugin\ModMenu\Exception\ModMenuException;
 
-/** Downloads one archive to a temporary file owned by the caller on success. */
+/** Downloads plugin archives and directory listings over checked HTTPS connections. */
 class ArchiveDownloader
 {
     private const MAX_REDIRECTS = 5;
+    private const MAX_DIRECTORY_BYTES = 5 * 1024 * 1024;
 
     private Closure $resolver;
     private ?Closure $transport;
 
     /**
      * @param callable(string): string[]|null $resolver Resolves all A and AAAA addresses.
-     * @param callable|null $transport Receives URL, pinned IP, and curl header and write callbacks.
+     * @param callable|null $transport Receives URL, pinned IP, curl header and write callbacks, and request headers.
      *                                 Returns [status, absolute redirect URL or null], with status 0 on transfer failure.
      */
     public function __construct(?callable $resolver = null, ?callable $transport = null)
@@ -52,7 +53,37 @@ class ArchiveDownloader
             && ! (str_starts_with($packed, "\x3f\xff") && (ord($packed[2]) & 0xf0) === 0);
     }
 
+    /** The caller owns the returned temporary file. */
     public function download(string $url): string
+    {
+        return $this->downloadToTemp(
+            $url,
+            PluginArchive::MAX_ARCHIVE_BYTES,
+            t('The plugin archive is larger than 50 MB.')
+        );
+    }
+
+    public function fetchJson(string $url): array
+    {
+        $path = $this->downloadToTemp(
+            $url,
+            self::MAX_DIRECTORY_BYTES,
+            t('The directory listing is larger than 5 MB.'),
+            ['Accept: application/json']
+        );
+        try {
+            $body = @file_get_contents($path);
+            if ($body === false) {
+                throw new ModMenuException(t('Unable to read the directory listing.'));
+            }
+            $json = json_decode($body, true, 512, JSON_THROW_ON_ERROR);
+            return is_array($json) ? $json : [];
+        } finally {
+            @unlink($path);
+        }
+    }
+
+    private function downloadToTemp(string $url, int $maxBytes, string $oversizeMessage, array $headers = []): string
     {
         $url = self::checkedUrl($url);
         if ($this->transport === null && ! extension_loaded('curl')) {
@@ -75,18 +106,18 @@ class ArchiveDownloader
             $bytes = 0;
             $failure = null;
             // Returning a short count stops curl immediately. Report the cause after the transfer.
-            $header = static function ($curl, string $line) use (&$failure): int {
+            $header = static function ($curl, string $line) use ($maxBytes, $oversizeMessage, &$failure): int {
                 if (preg_match('/^Content-Length:[ \t]*([0-9]+)[ \t]*\r?\n$/iD', $line, $matches)
-                    && (int) $matches[1] > PluginArchive::MAX_ARCHIVE_BYTES) {
-                    $failure = new ModMenuException(t('The plugin archive is larger than 50 MB.'));
+                    && (int) $matches[1] > $maxBytes) {
+                    $failure = new ModMenuException($oversizeMessage);
                     return 0;
                 }
                 return strlen($line);
             };
-            $write = static function ($curl, string $chunk) use ($file, &$bytes, &$failure): int {
+            $write = static function ($curl, string $chunk) use ($file, $maxBytes, $oversizeMessage, &$bytes, &$failure): int {
                 $length = strlen($chunk);
-                if ($length > PluginArchive::MAX_ARCHIVE_BYTES - $bytes) {
-                    $failure = new ModMenuException(t('The plugin archive is larger than 50 MB.'));
+                if ($length > $maxBytes - $bytes) {
+                    $failure = new ModMenuException($oversizeMessage);
                     return 0;
                 }
                 if (@fwrite($file, $chunk) !== $length) {
@@ -99,7 +130,7 @@ class ArchiveDownloader
 
             for ($redirects = 0; ; $redirects++) {
                 $address = $this->checkedAddress(parse_url($url, PHP_URL_HOST));
-                [$status, $location] = $transport($url, $address, $header, $write);
+                [$status, $location] = $transport($url, $address, $header, $write, $headers);
                 if ($failure !== null) {
                     throw $failure;
                 }
@@ -173,7 +204,7 @@ class ArchiveDownloader
         return array_merge($ipv4, array_column($records, 'ipv6'));
     }
 
-    private static function request(string $url, string $address, callable $header, callable $write): array
+    private static function request(string $url, string $address, callable $header, callable $write, array $headers): array
     {
         $host = parse_url($url, PHP_URL_HOST);
         $curl = curl_init($url);
@@ -190,6 +221,7 @@ class ArchiveDownloader
             CURLOPT_CONNECTTIMEOUT => 10,
             CURLOPT_TIMEOUT => 120,
             CURLOPT_USERAGENT => Client::HTTP_USER_AGENT,
+            CURLOPT_HTTPHEADER => $headers,
             CURLOPT_HEADERFUNCTION => $header,
             CURLOPT_WRITEFUNCTION => $write,
         ];

@@ -393,14 +393,18 @@ class ControllerFlowTest extends Base
 
     public function testBrowseRendersNewestUpdatedFirstWithCategoryCounts()
     {
-        $http = $this->getMockBuilder(\Kanboard\Core\Http\Client::class)
-            ->setConstructorArgs([$this->container])->onlyMethods(['getJson'])->getMock();
-        $http->method('getJson')->willReturn([
+        $listing = [
             ['name' => 'OldOne', 'title' => 'Old one', 'version' => '1.0.0', 'category' => 'Fun', 'last_updated' => '2026-01-02'],
             ['name' => 'NoDate', 'title' => 'No date', 'version' => '1.0.0'],
             ['name' => 'NewOne', 'title' => 'New one', 'version' => '1.0.0', 'category' => 'Fun', 'last_updated' => '2026-11-17'],
-        ]);
-        $this->container['httpClient'] = $http;
+        ];
+        $this->container['modMenuDirectoryDownloader'] = new ArchiveDownloader(
+            static fn () => ['140.82.112.3'],
+            static function ($url, $address, $header, $write) use ($listing) {
+                $write(null, json_encode($listing));
+                return [200, null];
+            }
+        );
 
         $m = $this->manager();
         $m->method('activeConflicts')->willReturn([]);
