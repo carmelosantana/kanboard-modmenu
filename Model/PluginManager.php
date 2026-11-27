@@ -491,8 +491,8 @@ class PluginManager extends Base
         // Found by key, then (R17) the entry's own name must equal $expectedName
         // byte for byte: a case variant is never installed in either direction.
         $entry = $expectedName === null ? null : $this->catalogEntry($expectedName);
-        if ($entry !== null && ($listed = $this->listedName($expectedName)) !== $expectedName) {
-            throw new ModMenuException(t(self::LISTED_AS, $listed, $expectedName));
+        if ($expectedName !== null) {
+            $this->assertListedAs($expectedName);
         }
         $private = self::privateSourceOf($entry) !== null;
         $sha256 = null;
@@ -1324,6 +1324,10 @@ class PluginManager extends Base
     public function resolveAndActivate(string $name, string $action, string $target, array $plan): void
     {
         $this->guard()->assertCanStart();
+        if ($action === 'install') {
+            // Before any dependency is installed or enabled for it.
+            $this->assertListedAs($name);
+        }
         $this->withPluginLocks(array_merge([$name], self::planPlugins($plan)), fn () => $this->guard()->underCatalog(function (array $doc) use ($name, $action, $target, $plan): void {
             $this->assertPlanSources($plan, $this->dependencySource($name, $doc), $doc);
             $this->resolveDependencies($plan);
@@ -1351,6 +1355,20 @@ class PluginManager extends Base
     private function catalogEntry(string $name): ?array
     {
         return self::entryIn($this->catalog, $name);
+    }
+
+    /**
+     * R17: a catalog entry found for $name by key must be named $name byte
+     * for byte; nothing is installed, enabled or disabled for a case variant.
+     *
+     * @throws ModMenuException
+     */
+    private function assertListedAs(string $name): void
+    {
+        $listed = $this->listedName($name);
+        if ($listed !== null && $listed !== $name) {
+            throw new ModMenuException(t(self::LISTED_AS, $listed, $name));
+        }
     }
 
     /** The catalog's own spelling of $name: the entry's `name`, else its key. */

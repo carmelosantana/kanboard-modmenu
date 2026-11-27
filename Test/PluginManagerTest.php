@@ -1166,6 +1166,27 @@ class PluginManagerTest extends Base
         $this->assertSame(['App' => 'active', 'Harbor' => 'active', 'ShadcnTheme' => 'disabled'], array_column($this->manager->listInstalled(), 'status', 'name'));
     }
 
+    public function testResolveAndActivateRefusesAMisspelledTargetBeforeItsDependencies()
+    {
+        $downloader = $this->createMock(ArchiveDownloader::class);
+        $downloader->expects($this->never())->method('download');
+        $this->manager->setArchiveDownloader($downloader);
+        $catalog = [
+            'SECRET' => ['name' => 'SECRET', 'download' => 'https://x/s.zip', 'requires' => [['plugin' => 'Helper']]],
+            'Helper' => ['name' => 'Helper', 'download' => 'https://x/h.zip'],
+        ];
+        $plan = [['plugin' => 'Helper', 'action' => 'install', 'download' => 'https://x/h.zip', 'min_version' => null]];
+
+        try {
+            $this->manager->setCatalog($catalog)->resolveAndActivate('Secret', 'install', 'https://x/s.zip', $plan);
+            $this->fail('a misspelled target must be refused');
+        } catch (ModMenuException $e) {
+            $this->assertSame('The directory lists this plugin as &quot;SECRET&quot;, not &quot;Secret&quot;. Nothing was installed.', $e->getMessage());
+        }
+
+        $this->assertSame([], $this->manager->listInstalled());
+    }
+
     public function testUpdateAllInstallsEachUpdateAndKeepsGoingPastAFailure()
     {
         $this->seedPlugin($this->active, 'Alpha', '1.0.0');

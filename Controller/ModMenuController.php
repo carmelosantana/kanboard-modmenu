@@ -533,6 +533,9 @@ class ModMenuController extends BaseController
             return;
         }
         [$catalog, $guard] = $guarded;
+        if ($this->refuseMisspelled($catalog, $name)) {
+            return;
+        }
         $entry = self::catalogEntry($catalog, $name);
         if ($this->promptOnConflict($name, 'install', $entry['conflicts'] ?? [], $entry['replaces'] ?? [])) {
             return;
@@ -559,6 +562,9 @@ class ModMenuController extends BaseController
             $result = $this->catalogResult();
             $catalog = $result['plugins'];
             $guard = new MutationGuard($this->container, $result);
+            if ($this->refuseMisspelled($catalog, $name)) {
+                return;
+            }
         }
         $entry    = self::catalogEntry($catalog, $name);
         $declared = $entry['conflicts'] ?? [];
@@ -651,6 +657,9 @@ class ModMenuController extends BaseController
             return;
         }
         [$catalog, $guard] = $guarded;
+        if ($action === 'install' && $this->refuseMisspelled($catalog, $name)) {
+            return;
+        }
         $manager  = $this->manager();
         $requires = $this->requiresFor($name, $action, $catalog, $manager);
         $check    = $manager->forwardCheck($requires, $catalog, null, $this->dependencySource($name, $action, $catalog));
@@ -695,6 +704,9 @@ class ModMenuController extends BaseController
             return;
         }
         [$catalog, $guard] = $guarded;
+        if ($this->refuseMisspelled($catalog, $expected)) {
+            return;
+        }
         $url = (string) (self::catalogEntry($catalog, $expected)['download'] ?? '');
         if ($expected === '' || $url === '') {
             $this->flash->failure(t('This plugin is not in the directory.'));
@@ -802,6 +814,27 @@ class ModMenuController extends BaseController
         $found = PluginName::find($catalog, $name);
         $entry = $found === null ? null : $catalog[$found];
         return is_array($entry) ? $entry : [];
+    }
+
+    /**
+     * R17, before any conflict prompt, conflict disabling or dependency step:
+     * a posted name whose catalog entry (found by key) has another `name` is
+     * refused with a failure flash and a return to Browse. True when refused.
+     */
+    private function refuseMisspelled(array $catalog, string $name): bool
+    {
+        $found = PluginName::find($catalog, $name);
+        if ($found === null) {
+            return false;
+        }
+        $listed = $catalog[$found]['name'] ?? $found;
+        $listed = is_string($listed) ? $listed : $found;
+        if ($listed === $name) {
+            return false;
+        }
+        $this->flash->failure(t(PluginManager::LISTED_AS, $listed, $name));
+        $this->backToDirectory();
+        return true;
     }
 
     private function requiresFor(string $name, string $action, array $catalog, PluginManager $manager): array
