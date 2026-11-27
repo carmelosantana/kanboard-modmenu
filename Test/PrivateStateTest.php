@@ -56,6 +56,45 @@ class PrivateStateTest extends Base
         $this->assertFileDoesNotExist($this->dir.'/private-state.json');
     }
 
+    public function testMissingFileEpochIsStableAndPersistsUntilReset()
+    {
+        $state = new PrivateState($this->container, $this->dir);
+        $zero = str_repeat('0', 32);
+
+        $this->assertSame($zero, $state->read()['epoch']);
+        $this->assertSame($zero, $state->read()['epoch']);
+
+        $written = $state->mutate(fn (array $doc) => $this->withSource($doc, 'a'));
+        $this->assertSame($zero, $written['epoch']);
+        $this->assertSame($zero, $state->read()['epoch']);
+
+        $reset = $state->reset();
+        $this->assertNotSame($zero, $reset['epoch']);
+        $this->assertMatchesRegularExpression('/^[0-9a-f]{32}$/', $reset['epoch']);
+    }
+
+    public function testSymlinkedLockIsDamaged()
+    {
+        $state = new PrivateState($this->container, $this->dir);
+        $state->mutate(fn (array $doc) => $doc);
+        rename($this->root.'/modmenu-provenance.lock', $this->root.'/target.lock');
+        symlink($this->root.'/target.lock', $this->root.'/modmenu-provenance.lock');
+
+        $this->assertTrue($state->isDamaged());
+        $this->expectException(PrivateStateDamaged::class);
+        $state->read();
+    }
+
+    public function testGroupReadableLockIsDamaged()
+    {
+        $state = new PrivateState($this->container, $this->dir);
+        $state->mutate(fn (array $doc) => $doc);
+        chmod($this->root.'/modmenu-provenance.lock', 0640);
+
+        $this->assertTrue($state->isDamaged());
+        $this->assertFalse($state->hasPrivateSources());
+    }
+
     public function testMissingFileWithMarkerIsDamaged()
     {
         $this->container['configModel']->save([PrivateState::MARKER => '1']);
@@ -170,7 +209,7 @@ class PrivateStateTest extends Base
             'extra key' => fn ($d) => $d + ['extra' => 1],
             'missing key' => function ($d) { unset($d['dismissed']); return $d; },
             'wrong version' => fn ($d) => array_replace($d, ['version' => 2]),
-            'bad epoch' => fn ($d) => array_replace($d, ['epoch' => strtoupper($d['epoch'])]),
+            'bad epoch' => fn ($d) => array_replace($d, ['epoch' => str_repeat('A', 32)]),
             'short epoch' => fn ($d) => array_replace($d, ['epoch' => 'abc']),
             'negative generation' => fn ($d) => array_replace($d, ['generation' => -1]),
             'string generation' => fn ($d) => array_replace($d, ['generation' => '1']),

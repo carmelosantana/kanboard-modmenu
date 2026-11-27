@@ -25,6 +25,7 @@ class PrivateState extends Base
     private const KEYS = ['bindings', 'dismissed', 'epoch', 'generation', 'removed', 'seen', 'sources', 'version'];
     private const MAPS = ['sources', 'removed', 'bindings', 'seen', 'dismissed'];
     private const NOT_RECORDED = 'ModMenu could not record its private state';
+    private const INITIAL_EPOCH = '00000000000000000000000000000000';
 
     private string $dir;
     private string $lockPath;
@@ -38,20 +39,23 @@ class PrivateState extends Base
 
     /**
      * The current document, read from disk. A missing file is the empty
-     * initial state only while the marker is unset.
+     * initial state (fixed all-zero epoch, so snapshots of it stay comparable)
+     * only while the marker is unset. A provenance lock that is present but
+     * breaks a rule is damage too.
      *
      * @throws PrivateStateDamaged
      */
     public function read(): array
     {
         $file = $this->dir.'/'.self::FILE;
+        self::inspect($this->lockPath, false);
 
         if (self::inspect($this->dir, true) === null || ($stat = self::inspect($file, false)) === null) {
             if ($this->markerValue() !== '') {
                 throw new PrivateStateDamaged();
             }
 
-            return self::emptyDoc();
+            return array_replace(self::emptyDoc(), ['epoch' => self::INITIAL_EPOCH]);
         }
 
         $handle = @fopen($file, 'rb');
@@ -253,6 +257,8 @@ class PrivateState extends Base
      */
     private function recordMarker(): void
     {
+        $this->memoryCache->flush();
+
         if ($this->markerValue() === '1') {
             return;
         }
@@ -278,8 +284,6 @@ class PrivateState extends Base
 
     private function markerValue(): string
     {
-        $this->memoryCache->flush();
-
         return (string) $this->configModel->get(self::MARKER, '');
     }
 
@@ -302,7 +306,7 @@ class PrivateState extends Base
             throw new ModMenuException(t(self::NOT_RECORDED));
         }
 
-        $ok = chmod($temp, 0600)
+        $ok = @chmod($temp, 0600)
             && fwrite($handle, $json) === strlen($json)
             && fflush($handle)
             && fsync($handle);
