@@ -666,6 +666,25 @@ class PrivateInstallTest extends Base
         $this->assertDirectoryDoesNotExist($this->active.'/Mine');
     }
 
+    public function testMixedCaseNestedDependencyInACallerPlanRefused(): void
+    {
+        $id = $this->privateSource([]);
+        $this->fetcher->listings[$id] = [$this->privateEntry('Mine', '1.0.0', ['requires' => [['plugin' => 'helper']]])];
+        $this->publicPlugin('Helper', '1.0.0');
+        $this->publicPlugin('Pub', '1.0.0');
+        $result = $this->fetch();
+        $this->manager->setCatalog($result['plugins'], new MutationGuard($this->container, $result));
+        $forged = [
+            ['plugin' => 'Helper', 'action' => 'install', 'download' => $this->publicDownload('Helper', '1.0.0'), 'min_version' => null],
+            ['plugin' => 'Mine', 'action' => 'install', 'download' => $result['plugins']['Mine']['download'], 'min_version' => null],
+        ];
+
+        $this->assertRefused(PluginManager::MIGRATION_PLAN_CHANGED_MESSAGE, fn () => $this->manager->resolveAndActivate('Pub', 'install', $this->publicDownload('Pub', '1.0.0'), $forged));
+
+        $this->assertDirectoryDoesNotExist($this->active.'/Helper');
+        $this->assertDirectoryDoesNotExist($this->active.'/Mine');
+    }
+
     public function testPrivateEntryWithoutValidSourceIdFailsClosed(): void
     {
         $this->publicPlugin('Alpha', '1.0.0');

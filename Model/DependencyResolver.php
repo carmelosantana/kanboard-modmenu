@@ -56,14 +56,13 @@ class DependencyResolver extends Base
 
         $candidates = [];
         foreach ([$installedMap, $catalog] as $entries) {
-            $deprecated = PluginManager::normalizeDeprecated($entries[$name]['deprecated'] ?? null);
+            $deprecated = PluginManager::normalizeDeprecated(self::entry($entries, $name)['deprecated'] ?? null);
             $successor = $deprecated['superseded_by'] ?? null;
-            if ($successor !== null && $successor !== $name) {
+            if ($successor !== null && ! PluginName::same($successor, $name)) {
                 $candidates[$successor] = true;
             }
             foreach ($entries as $candidate => $entry) {
-                if ((string) $candidate !== $name
-                    && in_array($name, PluginManager::normalizeReplaces($entry['replaces'] ?? []), true)) {
+                if (! PluginName::same((string) $candidate, $name) && self::listsName(PluginManager::normalizeReplaces($entry['replaces'] ?? []), $name)) {
                     $candidates[$candidate] = true;
                 }
             }
@@ -72,15 +71,14 @@ class DependencyResolver extends Base
         $installed = null;
         $listed = null;
         foreach (array_keys($candidates) as $candidate) {
-            if (($installedMap[$candidate]['status'] ?? null) === 'active') {
-                return (string) $candidate;
+            $folder = PluginName::find($installedMap, (string) $candidate);
+            if ($folder !== null && ($installedMap[$folder]['status'] ?? null) === 'active') {
+                return $folder;
             }
-            if (isset($installedMap[$candidate])) {
-                $installed ??= (string) $candidate;
+            if ($folder !== null) {
+                $installed ??= $folder;
             }
-            if (isset($catalog[$candidate])) {
-                $listed ??= (string) $candidate;
-            }
+            $listed ??= PluginName::find($catalog, (string) $candidate);
         }
         return $installed ?? $listed;
     }
@@ -99,22 +97,26 @@ class DependencyResolver extends Base
         $min    = isset($dep['min_version']) && $dep['min_version'] !== '' ? (string) $dep['min_version'] : null;
         $reason = (string) ($dep['reason'] ?? '');
 
+        // Names compare by PluginName::key(); the installed folder (else the
+        // catalog name) is kept for display and for the plan.
         $successor = null;
-        $installed = $name === '' ? null : ($installedMap[$name] ?? null);
+        $folder    = PluginName::find($installedMap, $name);
+        $display   = $folder ?? PluginName::find($catalog, $name) ?? $name;
+        $installed = $folder === null ? null : $installedMap[$folder];
         if (($installed['status'] ?? null) !== 'active') {
             $successor = self::successorFor($name, $installedMap, $catalog);
             // Preserve the action for an installed original unless its successor is already active.
-            if ($successor !== null && $installed !== null && ($installedMap[$successor]['status'] ?? null) !== 'active') {
+            if ($successor !== null && $installed !== null && (self::entry($installedMap, $successor)['status'] ?? null) !== 'active') {
                 $successor = null;
             }
         }
         if ($successor !== null) {
-            $installed = $installedMap[$successor] ?? null;
+            $installed = self::entry($installedMap, $successor);
             $min = null;
         }
 
         $installedVersion = $installed['version'] ?? null;
-        $catalogEntry     = $catalog[$successor ?? $name] ?? null;
+        $catalogEntry     = self::entry($catalog, $successor ?? $name);
         $download         = $catalogEntry['download'] ?? null;
         $catalogVersion   = $catalogEntry['version'] ?? null;
 
@@ -141,7 +143,7 @@ class DependencyResolver extends Base
         }
 
         $result = [
-            'plugin'            => $status === 'satisfied' ? $name : ($successor ?? $name),
+            'plugin'            => $successor === null ? $display : ($status === 'satisfied' ? $name : $successor),
             'status'            => $status,
             'action'            => $action,
             'installed_version' => $installedVersion,
@@ -188,7 +190,7 @@ class DependencyResolver extends Base
     {
         $blockers = [];
         foreach ($installedPluginsDeps as $name => $info) {
-            if ($name === $target || ($info['status'] ?? '') !== 'active') {
+            if (PluginName::same((string) $name, $target) || ($info['status'] ?? '') !== 'active') {
                 continue;
             }
             foreach (($info['requires'] ?? []) as $dep) {
@@ -196,7 +198,7 @@ class DependencyResolver extends Base
                     continue;
                 }
                 $c = self::classify($dep, $installedMap, []);
-                if ($c['status'] === 'satisfied' && ($c['satisfied_by'] ?? $c['plugin']) === $target) {
+                if ($c['status'] === 'satisfied' && PluginName::same((string) ($c['satisfied_by'] ?? $c['plugin']), $target)) {
                     $blockers[] = ['plugin' => (string) $name, 'min_version' => $dep['min_version'] ?? null];
                 }
             }
@@ -230,7 +232,7 @@ class DependencyResolver extends Base
             }
             $name = (string) $dep['plugin'];
             // One visit per name and scope, so a public visit never hides a private one.
-            $visit = ($sourceId ?? '-') . '|' . $name;
+            $visit = ($sourceId ?? '-') . '|' . (PluginName::key($name) ?? $name);
             if (isset($seen[$visit])) {
                 continue;
             }
@@ -244,9 +246,10 @@ class DependencyResolver extends Base
 
             // Recurse into this dep's own requires (from the catalog) FIRST, so the
             // plan is deps-first (post-order): grandchildren before children.
-            $childRequires = $catalog[$target]['requires'] ?? [];
+            $targetEntry = self::entry($catalog, $target);
+            $childRequires = $targetEntry['requires'] ?? [];
             if (is_array($childRequires) && $childRequires !== []) {
-                $this->walk($childRequires, $installedMap, $fullCatalog, $plan, $seen, self::sourceOf($catalog[$target] ?? null));
+                $this->walk($childRequires, $installedMap, $fullCatalog, $plan, $seen, self::sourceOf($targetEntry));
             }
 
             // A requirement naming the successor directly can impose its own version floor.
@@ -268,5 +271,25 @@ class DependencyResolver extends Base
             }
             $plan[$target] = $step;
         }
+    }
+
+    /** The entry of $map that is the same plugin as $name, or null. */
+    private static function entry(array $map, string $name): ?array
+    {
+        $found = PluginName::find($map, $name);
+        $entry = $found === null ? null : $map[$found];
+
+        return is_array($entry) ? $entry : null;
+    }
+
+    private static function listsName(array $names, string $name): bool
+    {
+        foreach ($names as $listed) {
+            if (PluginName::same((string) $listed, $name)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 }

@@ -106,8 +106,9 @@ class DirectoryClient extends Base
             $name = $plugin['name'] ?? '';
             $version = (string) ($plugin['version'] ?? '0.0.0');
 
-            if (isset($installedMap[$name])) {
-                $installed = $installedMap[$name];
+            $folder = is_string($name) ? PluginName::find($installedMap, $name) : null;
+            if ($folder !== null) {
+                $installed = $installedMap[$folder];
                 if ($installed['status'] === 'disabled') {
                     $plugin['status'] = 'disabled';
                 } elseif (PluginManager::hasUpdate((string) $installed['version'], $version)) {

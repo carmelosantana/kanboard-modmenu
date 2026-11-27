@@ -1320,7 +1320,15 @@ class PluginManager extends Base
     {
         $key = PluginName::key($name);
         return ($key === null ? null : ($doc['bindings'][$key] ?? null))
-            ?? self::privateSourceOf($this->catalog[$name] ?? null);
+            ?? self::privateSourceOf($this->catalogEntry($name));
+    }
+
+    /** The catalog entry that is the same plugin as $name (PluginName::key), or null. */
+    private function catalogEntry(string $name): ?array
+    {
+        $found = PluginName::find($this->catalog, $name);
+        $entry = $found === null ? null : $this->catalog[$found];
+        return is_array($entry) ? $entry : null;
     }
 
     /**
@@ -1341,8 +1349,9 @@ class PluginManager extends Base
             $plugin = (string) ($step['plugin'] ?? '');
             $action = $step['action'] ?? '';
             if (in_array($action, ['install', 'update'], true)) {
-                $installed[$plugin] = self::privateSourceOf($this->catalog[$plugin] ?? null);
-                $requires[$plugin] = self::normalizeDeps($this->catalog[$plugin]['requires'] ?? []);
+                $entry = $this->catalogEntry($plugin);
+                $installed[PluginName::key($plugin) ?? $plugin] = self::privateSourceOf($entry);
+                $requires[$plugin] = self::normalizeDeps($entry['requires'] ?? []);
             } elseif ($action === 'enable') {
                 $deps ??= $this->installedPluginsDeps();
                 $requires[$plugin] = $deps[$plugin]['requires'] ?? [];
@@ -1360,7 +1369,8 @@ class PluginManager extends Base
                 continue;
             }
             foreach ($list as $dep) {
-                if (array_key_exists($dep['plugin'], $installed) && $installed[$dep['plugin']] !== $source) {
+                $depKey = PluginName::key((string) $dep['plugin']) ?? (string) $dep['plugin'];
+                if (array_key_exists($depKey, $installed) && $installed[$depKey] !== $source) {
                     throw $refuse();
                 }
             }

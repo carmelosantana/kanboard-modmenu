@@ -774,6 +774,15 @@ class DirectoryClientTest extends Base
         $this->assertSame('installed', $out[0]['status']);
     }
 
+    public function testAnnotateMatchesInstalledFolderCaseInsensitively()
+    {
+        $plugins = [['name' => 'rpcguard', 'version' => '1.1.0']];
+        $map = ['RpcGuard' => ['version' => '1.0.0', 'status' => 'active']];
+        $out = $this->client->annotate($plugins, 'https://x.com/plugins.json', $map);
+        $this->assertSame('update', $out[0]['status']);
+        $this->assertSame('1.0.0', $out[0]['installed_version']);
+    }
+
     public function testAnnotateMarksUpdate()
     {
         $plugins = [['name' => 'Foo', 'version' => '1.1.0']];

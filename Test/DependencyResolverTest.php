@@ -450,4 +450,41 @@ class DependencyResolverTest extends Base
         $this->assertSame('unresolvable', $plan[0]['action']);
         $this->assertSame('Helper', $plan[0]['plugin']);
     }
+
+    // ---- one case-insensitive identity (PluginName::key) ----
+    public function testMixedCaseDependencyIsSatisfiedByInstalledFolder()
+    {
+        $map = ['RpcGuard' => ['version' => '1.2.0', 'status' => 'active']];
+
+        $this->assertTrue(DependencyResolver::isSatisfied($this->dep('rpcguard', '1.0.0'), $map));
+        $this->assertSame([], $this->resolver->resolveClosure([$this->dep('rpcguard')], $map, [], self::SOURCE_A));
+        $forward = $this->resolver->resolveForward([$this->dep('RPCGUARD')], 'requires', $map, []);
+        $this->assertTrue($forward['satisfied']);
+        $this->assertSame('RpcGuard', $forward['deps'][0]['plugin'], 'the folder name is kept for display');
+    }
+
+    public function testMixedCaseSameSourceCatalogEntryIsFound()
+    {
+        $catalog = [
+            'Mine' => $this->privateEntry(self::SOURCE_A, ['requires' => [['plugin' => 'rpcguard']]]),
+            'RpcGuard' => ['download' => 'https://x/rpcguard.zip'] + $this->privateEntry(self::SOURCE_A),
+        ];
+        $plan = $this->resolver->resolveClosure([$this->dep('Mine')], [], $catalog);
+
+        $this->assertSame([
+            ['plugin' => 'RpcGuard', 'action' => 'install', 'download' => 'https://x/rpcguard.zip', 'min_version' => null],
+            ['plugin' => 'Mine', 'action' => 'install', 'download' => 'https://x/p.zip', 'min_version' => null],
+        ], $plan);
+    }
+
+    public function testMixedCaseRequirementBlocksRemovalOfInstalledFolder()
+    {
+        $map = [
+            'RpcGuard' => ['version' => '1.0.0', 'status' => 'active'],
+            'App' => ['version' => '1.0.0', 'status' => 'active'],
+        ];
+        $deps = ['App' => ['status' => 'active', 'requires' => [$this->dep('rpcguard')]]];
+
+        $this->assertSame([['plugin' => 'App', 'min_version' => null]], $this->resolver->resolveReverse('RpcGuard', $deps, $map));
+    }
 }
