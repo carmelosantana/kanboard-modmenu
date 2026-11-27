@@ -58,3 +58,4 @@
     .modmenu-toolbar__field { flex: 1 1 100%; }
     .modmenu-toolbar input, .modmenu-toolbar select { width: 100%; }
 }
+.modmenu-badge--private { background: #6d28d9; color: #fff; }

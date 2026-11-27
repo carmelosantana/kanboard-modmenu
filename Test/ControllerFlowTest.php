@@ -15,15 +15,25 @@ class FlowTestController extends ModMenuController
 {
     public $fakeManager;
     public $fakeCatalog = [];
+    public array $fakeResult = [];
 
     protected function manager(): PluginManager
     {
         return $this->fakeManager;
     }
 
-    protected function catalog(): array
+    /** The fetch result of a public-only install with no private state, unless a test overrides fields. */
+    protected function catalogResult(): array
     {
-        return $this->fakeCatalog;
+        return array_replace([
+            'plugins' => $this->fakeCatalog,
+            'errors' => [],
+            'private_ok' => true,
+            'frozen' => false,
+            'snapshot' => ['epoch' => str_repeat('0', 32), 'generation' => 0],
+            'quarantined' => [],
+            'listed' => [],
+        ], $this->fakeResult);
     }
 }
 
@@ -888,5 +898,45 @@ class ControllerFlowTest extends Base
         $this->controller($m, $catalog)->install();
 
         $this->assertStringContainsString('Plugin installed.', $this->flashes['success']);
+    }
+
+    // ── freshness guard on every catalog mutation ──────────────────────────
+
+    /** @dataProvider guardedActions */
+    public function testCatalogMutationsRefuseBeforeActingWhenTheGuardCannotStart(string $action, array $post, array $result, string $message)
+    {
+        $catalog = ['Alpha' => ['download' => 'https://x/alpha.zip', 'requires' => []]];
+        $m = $this->manager();
+        foreach (['installFromUrl', 'updateAll', 'resolveAndActivate', 'migrate', 'disableConflicts', 'prepareMigration', 'enable'] as $method) {
+            $m->expects($this->never())->method($method);
+        }
+        $m->method('activeConflicts')->willReturn([]);
+        $m->method('forwardCheck')->willReturn(['satisfied' => true, 'blocked' => false, 'plan' => []]);
+        $m->method('migrationSuccessor')->willReturn('Alpha');
+        $this->post($post);
+        $controller = $this->controller($m, $catalog);
+        $controller->fakeResult = $result;
+
+        $controller->$action();
+
+        $this->assertSame(['failure' => $message], $this->flashes);
+        $this->assertSame([], $this->bodies);
+    }
+
+    public static function guardedActions(): array
+    {
+        $down = [['private_ok' => false], 'Private sources must be reachable to change plugins'];
+        $frozen = [['frozen' => true, 'private_ok' => false, 'snapshot' => ['epoch' => null, 'generation' => null]], "ModMenu's private source state is damaged"];
+        $cases = [];
+        foreach (['down' => $down, 'frozen' => $frozen] as $why => [$result, $message]) {
+            $cases["install $why"] = ['install', ['name' => 'Alpha'], $result, e($message)];
+            $cases["update $why"] = ['update', ['name' => 'Alpha'], $result, e($message)];
+            $cases["update all $why"] = ['updateAll', [], $result, e($message)];
+            $cases["resolve $why"] = ['resolve', ['name' => 'Alpha', 'action' => 'install'], $result, e($message)];
+            $cases["resolve enable $why"] = ['resolve', ['name' => 'Alpha', 'action' => 'enable'], $result, e($message)];
+            $cases["migrate $why"] = ['runMigrate', ['name' => 'Old', 'plan_digest' => str_repeat('a', 64)], $result, e($message)];
+            $cases["conflict install $why"] = ['resolveConflict', ['name' => 'Alpha', 'action' => 'install', 'decision' => 'confirm'], $result, e($message)];
+        }
+        return $cases;
     }
 }

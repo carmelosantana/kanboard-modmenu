@@ -1,6 +1,12 @@
 <div class="page-header"><h2><?= t('ModMenu') ?></h2></div>
 <?= $this->render('ModMenu:settings/nav', ['tab' => $tab]) ?>
 
+<?php if (! empty($frozen)): ?>
+    <?= $this->render('ModMenu:settings/frozen') ?>
+<?php elseif (isset($private_ok) && ! $private_ok): ?>
+    <div class="modmenu-banner" role="alert"><?= e('Private sources must be reachable to change plugins') ?>. <?= t('Installs and updates are refused until every private source loads; see the errors below.') ?></div>
+<?php endif ?>
+
 <?php foreach ($errors as $err): ?>
     <?php if (($err['url'] ?? '') === ''): ?>
     <div class="modmenu-banner"><?= $this->text->e($err['message']) ?></div>

@@ -64,6 +64,24 @@ class MutationGuard extends Base
         ]);
     }
 
+    /**
+     * The guard for an install with no catalog entry (an upload, a legacy
+     * install by URL): with no state file nothing is fetched (1.6.0
+     * behaviour, and a file that appears later is refused as a change);
+     * otherwise $fetch() supplies this request's fetch result, so bound
+     * plugins, reachability and freezing are enforced as for catalog installs.
+     *
+     * @param callable(): array $fetch
+     */
+    public static function forUnlistedInstall(Container $container, callable $fetch): self
+    {
+        if (! (new PrivateState($container))->hasFile()) {
+            return self::withoutPrivateState($container);
+        }
+
+        return new self($container, $fetch());
+    }
+
     /** @throws ModMenuException */
     public function assertCanStart(): void
     {

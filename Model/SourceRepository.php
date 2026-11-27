@@ -25,6 +25,9 @@ class SourceRepository extends Base
     const CONFIG_KEY = 'modmenu_sources';
     const DEFAULT_SOURCE = 'https://raw.githubusercontent.com/carmelosantana/kanboard-modmenu-directory/main/plugins.json';
 
+    public const NOT_A_PRIVATE_URL = 'Please enter a raw.githubusercontent.com URL to a .json file.';
+    public const NOT_A_TOKEN_REF = 'Please enter a vault:// token reference.';
+
     private const DUPLICATE = 'Duplicate source; remove and re-add it';
 
     public function getSources(): array
@@ -148,13 +151,13 @@ class SourceRepository extends Base
         $source = GithubUrl::source(trim($url));
 
         if ($source === null) {
-            throw new ModMenuException(t('Please enter a raw.githubusercontent.com URL to a .json file.'));
+            throw new ModMenuException(t(self::NOT_A_PRIVATE_URL));
         }
 
         $tokenRef = trim($tokenRef);
 
         if (! PrivateState::isTokenRef($tokenRef)) {
-            throw new ModMenuException(t('Please enter a vault:// token reference.'));
+            throw new ModMenuException(t(self::NOT_A_TOKEN_REF));
         }
 
         foreach ($listedKeys as $key) {
