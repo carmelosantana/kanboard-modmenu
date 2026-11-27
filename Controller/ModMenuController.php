@@ -400,8 +400,8 @@ class ModMenuController extends BaseController
         $name = $this->request->getStringParam('name');
         $manager = $this->manager();
         try {
-            $successor = $manager->migrationSuccessor($name);
             $catalog = $this->catalog();
+            $successor = $manager->migrationSuccessor($name, $catalog);
             $this->renderMigrationConfirmation($name, $successor, $catalog, $manager->migrationCheck($name, $successor, $catalog));
         } catch (ModMenuException $e) {
             $this->flash->failure($e->getMessage());
@@ -442,7 +442,7 @@ class ModMenuController extends BaseController
 
         try {
             [$catalog, $guard] = $this->guardedCatalog();
-            $successor = $manager->migrationSuccessor($name);
+            $successor = $manager->migrationSuccessor($name, $catalog);
             $check = $manager->migrationCheck($name, $successor, $catalog);
             if ($check['self_update']) {
                 throw new ModMenuException(e(PluginManager::MIGRATION_SELF_UPDATE_MESSAGE));
@@ -471,7 +471,7 @@ class ModMenuController extends BaseController
                 if ($e->getCode() !== PluginManager::MIGRATION_PLAN_CHANGED) {
                     throw $e;
                 }
-                $successor = $manager->migrationSuccessor($name);
+                $successor = $manager->migrationSuccessor($name, $catalog);
                 $this->flash->failure($e->getMessage());
                 $this->renderMigrationConfirmation($name, $successor, $catalog, $manager->migrationCheck($name, $successor, $catalog));
                 return;

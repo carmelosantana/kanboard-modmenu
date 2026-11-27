@@ -164,22 +164,28 @@ class PluginManager extends Base
         });
     }
 
-    public function migrationSuccessor(string $old): string
+    /**
+     * The successor $old names, spelled as its installed folder, else as its
+     * catalog entry ($catalog, or the catalog set on this manager): names
+     * compare by PluginName::key().
+     */
+    public function migrationSuccessor(string $old, ?array $catalog = null): string
     {
-        $successor = $this->installedMap()[$old]['deprecated']['superseded_by'] ?? null;
-        if ($successor === null || $successor === $old) {
+        $map = $this->installedMap();
+        $successor = $map[$old]['deprecated']['superseded_by'] ?? null;
+        if ($successor === null || PluginName::same($successor, $old)) {
             throw new ModMenuException(t('%s has no successor to migrate to.', $old));
         }
         $this->guardName($successor);
-        return $successor;
+        return PluginName::find($map, $successor) ?? PluginName::find($catalog ?? $this->catalog, $successor) ?? $successor;
     }
 
     /** Check that migration can obtain its successor, without downloading it. */
     public function prepareMigration(string $old, array $catalog): string
     {
-        $successor = $this->migrationSuccessor($old);
+        $successor = $this->migrationSuccessor($old, $catalog);
         $this->guardSelf($old);
-        if (! isset($this->installedMap()[$successor]) && empty($catalog[$successor]['download'])) {
+        if (! isset($this->installedMap()[$successor]) && empty(self::entryIn($catalog, $successor)['download'])) {
             throw new ModMenuException(t('%s is not in the plugin directory, so nothing changed.', $successor));
         }
         return $successor;
@@ -190,9 +196,10 @@ class PluginManager extends Base
         $map = $this->installedMap();
         $install = ! isset($map[$successor]);
         $map[$old]['status'] = 'disabled';
+        $entry = self::entryIn($catalog, $successor);
         $requires = $this->installedPluginsDeps()[$successor]['requires']
-            ?? self::normalizeDeps($catalog[$successor]['requires'] ?? []);
-        $check = $this->forwardCheck($requires, $catalog, $map, self::privateSourceOf($catalog[$successor] ?? null));
+            ?? self::normalizeDeps($entry['requires'] ?? []);
+        $check = $this->forwardCheck($requires, $catalog, $map, self::privateSourceOf($entry));
         $selfUpdate = $install && $successor === self::SELF;
         foreach ($check['plan'] as $step) {
             // Dependencies cannot activate either side ahead of the switch.
@@ -206,13 +213,13 @@ class PluginManager extends Base
 
         $steps = [];
         if ($install) {
-            $steps[] = ['plugin' => $successor, 'action' => 'install', 'download' => $catalog[$successor]['download'] ?? null];
+            $steps[] = ['plugin' => $successor, 'action' => 'install', 'download' => $entry['download'] ?? null];
         }
         $steps = array_merge($steps, $check['plan']);
         $steps[] = ['plugin' => $old, 'action' => 'disable'];
         $steps[] = ['plugin' => $successor, 'action' => 'enable'];
 
-        $check['blocked'] = $check['blocked'] || $selfUpdate || ($install && empty($catalog[$successor]['download']));
+        $check['blocked'] = $check['blocked'] || $selfUpdate || ($install && empty($entry['download']));
         return $check + [
             'install' => $install,
             'self_update' => $selfUpdate,
@@ -226,29 +233,31 @@ class PluginManager extends Base
         foreach ($plan as $step) {
             $plugin = $step['plugin'];
             $download = $step['download'] ?? null;
+            $entry = self::entryIn($catalog, (string) $plugin);
             $steps[] = [
                 'plugin' => $plugin,
                 'action' => $step['action'],
                 'download' => $download,
-                'sha256' => $download === null ? null : ($catalog[$plugin]['sha256'] ?? null),
+                'sha256' => $download === null ? null : ($entry['sha256'] ?? null),
                 'min_version' => $step['min_version'] ?? null,
-                'private' => ! empty($catalog[$plugin]['private']),
-                'source_id' => $catalog[$plugin]['source_id'] ?? null,
+                'private' => ! empty($entry['private']),
+                'source_id' => $entry['source_id'] ?? null,
             ];
         }
+        $entry = self::entryIn($catalog, $successor);
         return hash('sha256', json_encode([
             'successor' => $successor,
-            'download' => $catalog[$successor]['download'] ?? null,
-            'sha256' => $catalog[$successor]['sha256'] ?? null,
-            'private' => ! empty($catalog[$successor]['private']),
-            'source_id' => $catalog[$successor]['source_id'] ?? null,
+            'download' => $entry['download'] ?? null,
+            'sha256' => $entry['sha256'] ?? null,
+            'private' => ! empty($entry['private']),
+            'source_id' => $entry['source_id'] ?? null,
             'steps' => $steps,
         ], JSON_THROW_ON_ERROR));
     }
 
     public function assertMigrationConflicts(string $old, string $successor, array $catalog): void
     {
-        $entry = $catalog[$successor] ?? [];
+        $entry = self::entryIn($catalog, $successor) ?? [];
         $conflicts = array_diff($this->activeConflicts($successor, $entry['conflicts'] ?? [], $entry['replaces'] ?? []), [$old]);
         if ($conflicts !== []) {
             throw new ModMenuException(t('%s conflicts with %s. Disable them first.', $successor, implode(', ', $conflicts)));
@@ -265,14 +274,14 @@ class PluginManager extends Base
         $this->setCatalog($catalog, $guard ?? $this->guard);
         $this->guard()->assertCanStart();
         $this->guardName($old);
-        $successor = $this->migrationSuccessor($old);
+        $successor = $this->migrationSuccessor($old, $catalog);
         $this->guardSelf($old);
         $plan = $this->migrationCheck($old, $successor, $catalog)['plan'];
         $names = array_merge([$old, $successor], self::planPlugins($plan));
 
         return $this->withPluginLocks($names, fn (): string => $this->guard()->underCatalog(function () use ($old, $successor, $catalog, $dependenciesConfirmed, $confirmedDigest): string {
             $check = $this->migrationCheck($old, $successor, $catalog);
-            if ($this->migrationSuccessor($old) !== $successor || ! $this->holdsLocks(self::planPlugins($check['plan']))) {
+            if ($this->migrationSuccessor($old, $catalog) !== $successor || ! $this->holdsLocks(self::planPlugins($check['plan']))) {
                 throw new ModMenuException(t(self::MIGRATION_PLAN_CHANGED_MESSAGE), self::MIGRATION_PLAN_CHANGED);
             }
             $this->runMigration($old, $successor, $catalog, $dependenciesConfirmed, $confirmedDigest, $check);
@@ -311,7 +320,7 @@ class PluginManager extends Base
             }
             if ($check['install']) {
                 try {
-                    $this->installForMigration($catalog[$successor]['download'], $successor, $journal);
+                    $this->installForMigration((string) (self::entryIn($catalog, $successor)['download'] ?? ''), $successor, $journal);
                 } catch (ModMenuException $e) {
                     throw new ModMenuException(
                         e("Couldn't install %s, so %s stays active.", htmlspecialchars($successor), htmlspecialchars($old)) . ' ' . $e->getMessage(),
@@ -385,7 +394,7 @@ class PluginManager extends Base
         foreach ($plan as $step) {
             $name = $step['plugin'];
             if ($step['action'] !== 'enable') {
-                $map[$name] = $catalog[$name] ?? [];
+                $map[$name] = self::entryIn($catalog, (string) $name) ?? [];
             }
             $map[$name]['status'] = 'active';
         }
@@ -1128,7 +1137,7 @@ class PluginManager extends Base
             $blocked = [];
             $self = null;
             foreach ($this->listInstalled() as $p) {
-                $entry = $catalog[$p['name']] ?? null;
+                $entry = self::entryIn($catalog, (string) $p['name']);
                 $key = PluginName::key((string) $p['name']);
                 $bound = $key !== null && isset($doc['bindings'][$key]);
                 if ($p['status'] !== 'active') {
@@ -1327,8 +1336,14 @@ class PluginManager extends Base
     /** The catalog entry that is the same plugin as $name (PluginName::key), or null. */
     private function catalogEntry(string $name): ?array
     {
-        $found = PluginName::find($this->catalog, $name);
-        $entry = $found === null ? null : $this->catalog[$found];
+        return self::entryIn($this->catalog, $name);
+    }
+
+    /** The entry of $catalog that is the same plugin as $name (PluginName::key), or null. */
+    private static function entryIn(array $catalog, string $name): ?array
+    {
+        $found = PluginName::find($catalog, $name);
+        $entry = $found === null ? null : $catalog[$found];
         return is_array($entry) ? $entry : null;
     }
 

@@ -1112,6 +1112,42 @@ class PluginManagerTest extends Base
         $this->assertSame(['plugin' => 'Alpha', 'from' => '1.0.0', 'to' => '1.0.1', 'download' => 'https://x/alpha.zip'], $updates[0]);
     }
 
+    public function testUpdatesFindTheCatalogEntryUnderAnotherSpelling()
+    {
+        $this->seedPlugin($this->active, 'Alpha', '1.0.0');
+        $this->stubDownloads(['https://x/alpha.zip' => $this->makeZip('Alpha', '1.1.0')]);
+        $catalog = ['ALPHA' => ['version' => '1.1.0', 'download' => 'https://x/alpha.zip']];
+
+        $this->assertSame(['Alpha'], array_column($this->manager->updatesAvailable($catalog), 'plugin'));
+        $this->assertSame(['updated' => ['Alpha'], 'failed' => []], $this->manager->updateAll($catalog));
+        $this->assertSame(['Alpha' => '1.1.0'], array_column($this->manager->listInstalled(), 'version', 'name'));
+    }
+
+    public function testMigrationFindsTheSuccessorUnderAnotherSpelling()
+    {
+        $this->seedPlugin($this->active, 'ShadcnTheme', '1.3.0', ['deprecated' => ['superseded_by' => 'harbor']]);
+        $this->stubDownloads(['https://x/harbor.zip' => $this->makeZip('Harbor', '2.0.0')]);
+        $catalog = ['Harbor' => ['version' => '2.0.0', 'download' => 'https://x/harbor.zip']];
+
+        $this->assertSame('Harbor', $this->manager->migrationSuccessor('ShadcnTheme', $catalog));
+        $this->assertSame('Harbor', $this->manager->prepareMigration('ShadcnTheme', $catalog));
+        $check = $this->manager->migrationCheck('ShadcnTheme', 'Harbor', $catalog);
+        $this->assertFalse($check['blocked']);
+        $this->assertSame('Harbor', $this->manager->migrate('ShadcnTheme', $catalog, true, $check['plan_digest']));
+
+        $this->assertSame(['Harbor' => 'active', 'ShadcnTheme' => 'disabled'], array_column($this->manager->listInstalled(), 'status', 'name'));
+    }
+
+    public function testMigrationToAnInstalledSuccessorUsesItsFolderSpelling()
+    {
+        $this->seedPlugin($this->active, 'ShadcnTheme', '1.3.0', ['deprecated' => ['superseded_by' => 'HARBOR']]);
+        $this->seedPlugin($this->disabled, 'Harbor', '2.0.0');
+
+        $this->assertSame('Harbor', $this->manager->migrationSuccessor('ShadcnTheme', []));
+        $this->assertSame('Harbor', $this->manager->migrate('ShadcnTheme', [], true));
+        $this->assertSame(['Harbor' => 'active', 'ShadcnTheme' => 'disabled'], array_column($this->manager->listInstalled(), 'status', 'name'));
+    }
+
     public function testUpdateAllInstallsEachUpdateAndKeepsGoingPastAFailure()
     {
         $this->seedPlugin($this->active, 'Alpha', '1.0.0');
