@@ -6,6 +6,7 @@ use KanboardTests\units\Base;
 use Kanboard\Plugin\ModMenu\Exception\ModMenuException;
 use Kanboard\Plugin\ModMenu\Model\ArchiveDownloader;
 use Kanboard\Plugin\ModMenu\Model\CatalogLock;
+use Kanboard\Plugin\ModMenu\Model\DependencyResolver;
 use Kanboard\Plugin\ModMenu\Model\DirectoryClient;
 use Kanboard\Plugin\ModMenu\Model\GithubUrl;
 use Kanboard\Plugin\ModMenu\Model\MutationGuard;
@@ -450,6 +451,72 @@ class PrivateInstallTest extends Base
         $this->assertSame('1.0.0', $this->version('Alpha'));
     }
 
+    // ── one identity per key on the download path (MM-IMPL-R2-01) ──────────
+
+    public function testMixedCaseDependencyUpdateUsesThePrivateFetch(): void
+    {
+        [$id, $plan, $mine] = $this->boundSecretUnderAnotherSpelling(fn (string $zip) => hash_file('sha256', $zip));
+        $seen = [];
+        $this->manager->atCommit = function (string $name) use (&$seen): void {
+            $seen[$name] = $this->bindings();
+        };
+
+        $this->manager->resolveAndActivate('Mine', 'install', $mine, $plan);
+
+        $this->assertSame('2.0.0', $this->version('Secret'));
+        $this->assertSame('1.0.0', $this->version('Mine'));
+        $this->assertSame(['secret' => $id], $seen['Secret'], 'bound before the new Secret is activated');
+        $this->assertSame(['secret' => $id, 'mine' => $id], $seen['Mine']);
+        $this->assertContains($this->download('SECRET', '2.0.0'), array_column($this->fetcher->downloads, 1));
+    }
+
+    public function testMixedCaseDependencyUpdateEnforcesTheChecksum(): void
+    {
+        [$id, $plan, $mine] = $this->boundSecretUnderAnotherSpelling(fn () => str_repeat('a', 64));
+
+        $this->assertRefused('The downloaded archive does not match the checksum in the directory. Nothing was installed.', fn () => $this->manager->resolveAndActivate('Mine', 'install', $mine, $plan));
+
+        $this->assertSame('1.0.0', $this->version('Secret'));
+        $this->assertNull($this->version('Mine'));
+        $this->assertSame(['secret' => $id], $this->bindings());
+    }
+
+    public function testMixedCaseListingNeverUpdatesASeenUnboundPluginFromThePublicPath(): void
+    {
+        $this->seed($this->active, 'RPCGUARD', '1.0.0');
+        $this->privateSource(['RpcGuard' => '2.0.0'], ['rpcguard']);
+        $public = 0;
+        $downloader = $this->createMock(ArchiveDownloader::class);
+        $downloader->method('download')->willReturnCallback(function () use (&$public): string {
+            $public++;
+            $path = tempnam($this->root, 'download-');
+            copy($this->zip('RPCGUARD', '2.0.0'), $path);
+            return $path;
+        });
+        $this->manager->setArchiveDownloader($downloader);
+        $result = $this->fetch();
+        $this->manager->setCatalog($result['plugins'], new MutationGuard($this->container, $result));
+
+        $this->assertRefused('Listed by a private source: adopt or dismiss', fn () => $this->manager->installFromUrl($this->download('RpcGuard', '2.0.0'), 'RPCGUARD'));
+
+        $this->assertSame(0, $public);
+        $this->assertSame([], $this->fetcher->downloads);
+        $this->assertSame('1.0.0', $this->version('RPCGUARD'));
+        $this->assertSame([], $this->bindings());
+    }
+
+    public function testUploadNeverUpdatesASeenUnboundPlugin(): void
+    {
+        $this->seed($this->active, 'Alpha', '1.0.0');
+        $this->privateSource([], ['alpha']);
+        $result = $this->fetch();
+        $this->manager->setCatalog($result['plugins'], new MutationGuard($this->container, $result));
+
+        $this->assertRefused('Listed by a private source: adopt or dismiss', fn () => $this->manager->installFromFile($this->zip('Alpha', '2.0.0')));
+
+        $this->assertSame('1.0.0', $this->version('Alpha'));
+    }
+
     public function testUnboundPluginIsNotBoundByAPrivateUpdate(): void
     {
         $this->seed($this->active, 'Secret', '0.9.0');
@@ -889,6 +956,33 @@ class PrivateInstallTest extends Base
             ['updated' => [], 'failed' => ['Secret' => 'Private source unavailable']],
             $this->manager->updateAll($result['plugins'], new MutationGuard($this->container, $result))
         );
+    }
+
+    /**
+     * Secret 1.0.0 installed and bound; its source now lists it as SECRET
+     * 2.0.0 (the archive's folder is Secret) and Mine, which requires
+     * secret >= 2.0.0. Returns [source id, Mine's dependency plan, Mine's download].
+     *
+     * @param callable(string): string $sha256 the listed digest for the SECRET archive
+     */
+    private function boundSecretUnderAnotherSpelling(callable $sha256): array
+    {
+        $id = $this->privateSource(['Secret' => '1.0.0']);
+        $this->install('Secret');
+        $zip = $this->zip('Secret', '2.0.0');
+        $this->fetcher->releases[$this->download('SECRET', '2.0.0')] = $zip;
+        $requires = [['plugin' => 'secret', 'min_version' => '2.0.0']];
+        $this->fetcher->listings[$id] = [
+            ['name' => 'SECRET', 'version' => '2.0.0', 'sha256' => $sha256($zip), 'download' => $this->download('SECRET', '2.0.0')],
+            $this->privateEntry('Mine', '1.0.0', ['requires' => $requires]),
+        ];
+        $result = $this->fetch();
+        $this->assertArrayHasKey('SECRET', $result['plugins']);
+        $this->manager->setCatalog($result['plugins'], new MutationGuard($this->container, $result));
+        $plan = (new DependencyResolver($this->container))->resolveClosure($requires, $this->manager->installedMap(), $result['plugins'], $id);
+        $this->assertSame([['plugin' => 'Secret', 'action' => 'update', 'download' => $this->download('SECRET', '2.0.0'), 'min_version' => '2.0.0']], $plan);
+
+        return [$id, $plan, $result['plugins']['Mine']['download']];
     }
 
     /** Runs $competitor at the manager's critical point; returns a getter for its refusal. */

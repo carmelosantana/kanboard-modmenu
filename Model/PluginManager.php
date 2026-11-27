@@ -478,8 +478,8 @@ class PluginManager extends Base
     private function downloadAndInstall(string $url, ?string $expectedName, bool $installDisabled, ?array &$journal = null): string
     {
         $this->guard()->assertCanStart();
-        $entry = $expectedName === null ? null : ($this->catalog[$expectedName] ?? null);
-        $entry = is_array($entry) ? $entry : null;
+        // By key: a plan step may name the installed folder's spelling of a catalog entry.
+        $entry = $expectedName === null ? null : $this->catalogEntry($expectedName);
         $private = self::privateSourceOf($entry) !== null;
         $sha256 = null;
         if ($entry !== null && (array_key_exists('sha256', $entry) || $private)) {
@@ -561,7 +561,8 @@ class PluginManager extends Base
      *  - two installed folders with its key, or one under another spelling;
      *  - a bound plugin comes only from its source's single entry;
      *  - an installed unbound plugin is never bound by an update, nor updated
-     *    from a public entry while a private source lists it (seen, not dismissed).
+     *    from a public entry or an unlisted archive (upload, install by URL)
+     *    while a private source lists it (seen, not dismissed).
      */
     private function sourceProblem(string $name, ?array $entry, array $doc, array $installedKeys): ?string
     {
@@ -589,7 +590,7 @@ class PluginManager extends Base
             }
             return null;
         }
-        if ($folders === [] || $entry === null) {
+        if ($folders === []) {
             return null;
         }
         if ($sourceId !== null || self::seenUnbound($key, $doc)) {
