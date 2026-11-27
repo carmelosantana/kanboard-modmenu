@@ -352,17 +352,20 @@ With no private source configured, ModMenu works exactly as before.
    updating from public sources. Until you choose, ModMenu does not update it.
 
 Each private source row shows its token reference and what Vault says about it: **shared
-with Server**, **not shared with Server** or **Vault off**. Vault cannot tell ModMenu in
-advance whether `ModMenu` is an allowed consumer, so a wrong consumer only shows up as an
-error on the next Browse.
+with Server**, **not shared with Server** or **Vault off**. Adding a source reads the token
+for real, so a wrong consumer or field fails the add and nothing is saved. Vault cannot
+tell ModMenu in advance whether `ModMenu` is still an allowed consumer, so a sharing change
+made later only shows up as an error on the next Browse.
 
 ### Adoption is explicit
 
 ModMenu never binds a plugin to a private source by itself. A bound plugin installs and
 updates only from its source, and a public entry with the same name is ignored for it. If
 the source is removed or cannot be reached, the plugin shows **Private source unavailable**
-and is not updated. **Unbind** (under the source's **Bound plugins**) lets it update from
-public sources again. Removing a private source keeps its bindings, so you can add it back
+and is not updated. **Unbind** (under the source's **Bound plugins**) releases it. If the
+source still lists it, the plugin goes back to waiting for a choice: **Adopt** it again or
+**Dismiss** it to update from public sources. If the source was removed, it updates from
+public sources. Removing a private source keeps its bindings, so you can add it back
 without adopting again.
 
 A private plugin's `requires` install only from the same private source. A requirement
@@ -383,9 +386,15 @@ down, so a revoked token or a deleted repository never locks you in.
 
 ModMenu asks Vault for the token once per operation on one source: once per directory
 fetch, and once per private plugin download. Vault limits reads per hour and per burst on
-the Server share, so set them to cover your heaviest operation. Browse and every install
-or update fetch each private source once; **Update all** then reads once more for each
-private plugin it updates. For example, with one private source and five private plugins,
+the Server share, so set them to cover your heaviest operation.
+
+These actions fetch every private source once, one read each: Browse; install (from Browse,
+or by URL once private state exists); update; **Update all**; enable; upload, once private
+state exists; **Adopt**; **Dismiss**; the **Migrate** confirmation and the migration
+itself; confirming a dependency plan; and answering a conflict prompt. Adding a private
+source reads only that source's token once. The Sources page, **Unbind**, removing a
+source and **Reset private state** read nothing. Each private plugin download reads once
+more, so **Update all** adds one read for each private plugin it updates. For example, with one private source and five private plugins,
 a full Update all needs about six reads at once; set the burst at least that high and the
 hourly rate with room for Browse page loads. A refused read shows Vault's reason, for example
 "ModMenu reached the token's Vault rate limit. Try again later".

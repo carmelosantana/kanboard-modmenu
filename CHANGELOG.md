@@ -19,14 +19,16 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - With a private source configured, a plugin name listed by more than one source is removed from Browse and reported, instead of first source wins.
 - Plugin names are compared case-insensitively. Directory entries whose names are not letters, digits and `_` (at most 64) are left out and reported as source errors, public sources included, and duplicates are found regardless of case.
 - Installed plugin folders whose names are not letters, digits and `_` can no longer be changed through ModMenu (Kanboard cannot load them either); remove them by hand.
-- Source URLs are stored in a normal form (lowercase scheme and host, no `:443`), so two spellings of one URL are one source; URLs with userinfo or a fragment are refused.
+- Source URLs are stored in a normal form (lowercase scheme and host, no `:443`), and a new spelling of a URL already in the list is refused as a duplicate; URLs with userinfo or a fragment are refused.
+- A source list saved by an earlier version with two spellings of one URL now fails closed: both show "Duplicate source; remove and re-add it" until you remove one, with or without private sources.
+- Adding or removing a public source now creates `DATA_DIR/modmenu` (mode 0700) for the catalog lock.
 - Downloads for migrations and dependency installs now run while source edits wait, so adding or removing a source can pause until a running download finishes.
 
 ### Security and reliability
 
 - Installing a plugin over an installed folder whose name differs only in case is refused.
 - When two installed folders share a name apart from case, neither is offered updates until one is removed.
-- Download redirects whose URL carries a `#fragment` are refused.
+- A `#fragment` in any download or source URL is refused, not only on redirects.
 - Plugin lock files are named after the lowercased plugin name, so `Foo` and `foo` share one lock. During the upgrade, an operation already running under 1.6.0 on a mixed-case plugin does not block a new one.
 
 ---
