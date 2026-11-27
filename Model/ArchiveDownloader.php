@@ -95,13 +95,17 @@ class ArchiveDownloader
      * @param string[] $firstHopHeaders Sent on the first request only, never on a redirect.
      * @param string[] $headers Sent on every request.
      * @param bool $followRedirects When false, any 3xx response is a failure.
+     * @param bool $assoc When false, a top-level JSON object comes back as an
+     *   array of its members with nested objects left as \stdClass, so a JSON
+     *   object stays distinguishable from a JSON array ([] when not an object).
      */
     public function fetchJsonWith(
         string $url,
         #[\SensitiveParameter] array $firstHopHeaders,
         int $maxBytes,
         bool $followRedirects,
-        array $headers
+        array $headers,
+        bool $assoc = true
     ): array {
         $failureMessage = e("Couldn't load this directory listing.");
         $path = $this->downloadToTemp(
@@ -119,6 +123,10 @@ class ArchiveDownloader
             $body = @file_get_contents($path);
             if ($body === false) {
                 throw new ModMenuException($failureMessage);
+            }
+            if (! $assoc) {
+                $json = json_decode($body, false, 512, JSON_THROW_ON_ERROR);
+                return $json instanceof \stdClass ? get_object_vars($json) : [];
             }
             $json = json_decode($body, true, 512, JSON_THROW_ON_ERROR);
             return is_array($json) ? $json : [];

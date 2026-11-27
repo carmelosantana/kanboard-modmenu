@@ -25,6 +25,7 @@ class PluginManager extends Base
     const MIGRATION_SELF_UPDATE_MESSAGE = "A migration can't update ModMenu itself. Update ModMenu first, then migrate.";
     const PRIVATE_UNAVAILABLE = 'Private source unavailable';
     const ADOPT_OR_DISMISS = 'Listed by a private source: adopt or dismiss';
+    const NOT_BOUND = '%s is not bound to a private source, so there is nothing to unbind.';
     const LISTED_AS = 'The directory lists this plugin as "%s", not "%s". Nothing was installed.';
     const INSTALLED_DUPLICATE = 'Two installed folders share the name %s; remove one first';
     const NOT_LISTED = '%s is not listed by this private source';
@@ -1497,10 +1498,14 @@ class PluginManager extends Base
 
         $this->withPluginLock($name, function () use ($name, $key): void {
             if (! isset($this->privateState()->read()['bindings'][$key])) {
-                throw new ModMenuException(t('%s is not bound to a private source, so there is nothing to unbind.', $name));
+                throw new ModMenuException(t(self::NOT_BOUND, $name));
             }
             $this->beforeCommit($name);
-            $this->privateState()->mutate(static function (array $fresh) use ($key): array {
+            // Re-checked under the provenance lock: a reset or another unbind may have run since.
+            $this->privateState()->mutate(static function (array $fresh) use ($key, $name): array {
+                if (! isset($fresh['bindings'][$key])) {
+                    throw new ModMenuException(t(self::NOT_BOUND, $name));
+                }
                 unset($fresh['bindings'][$key]);
                 return $fresh;
             });

@@ -303,11 +303,12 @@ class PrivateFetcherTest extends Base
         $this->assertSame('The release does not have exactly one asset named Widget-1.0.0.zip', $e->getMessage());
     }
 
-    public function testReleaseRefusesMapShapedAssets(): void
+    /** @dataProvider mapShapedAssets */
+    public function testReleaseRefusesMapShapedAssets(string $assets): void
     {
         $this->useReleaseRoutes([
-            self::TAGS_URL => static function ($write) {
-                $write(null, '{"tag_name":"v1.0.0","assets":{"x":{"id":77,"name":"Widget-1.0.0.zip"}}}');
+            self::TAGS_URL => static function ($write) use ($assets) {
+                $write(null, '{"tag_name":"v1.0.0","assets":' . $assets . '}');
                 return [200, null];
             },
             self::ASSET_URL => self::zipAsset(),
@@ -317,6 +318,30 @@ class PrivateFetcherTest extends Base
 
         $this->assertSame('The release does not have exactly one asset named Widget-1.0.0.zip', $e->getMessage());
         $this->assertSame([self::TAGS_URL], array_column($this->requests, 'url'));
+    }
+
+    public static function mapShapedAssets(): array
+    {
+        return [
+            'string key' => ['{"x":{"id":77,"name":"Widget-1.0.0.zip"}}'],
+            // Decoded as an associative array this is [0 => [...]], which passes array_is_list.
+            'list-like key' => ['{"0":{"id":77,"name":"Widget-1.0.0.zip"}}'],
+        ];
+    }
+
+    public function testReleaseAssetEntriesMustBeObjects(): void
+    {
+        $this->useReleaseRoutes([
+            self::TAGS_URL => static function ($write) {
+                $write(null, '{"tag_name":"v1.0.0","assets":[[77,"Widget-1.0.0.zip"]]}');
+                return [200, null];
+            },
+            self::ASSET_URL => self::zipAsset(),
+        ]);
+
+        $e = $this->failure(fn () => $this->fetcher()->downloadRelease($this->source(), self::DOWNLOAD));
+
+        $this->assertSame('The release does not have exactly one asset named Widget-1.0.0.zip', $e->getMessage());
     }
 
     public function testReleaseRefusesNonPositiveId(): void

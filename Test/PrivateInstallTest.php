@@ -300,6 +300,27 @@ class PrivateInstallTest extends Base
         $this->assertSame($before, $this->state()->read());
     }
 
+    public function testUnbindReChecksTheBindingUnderTheLock(): void
+    {
+        $this->privateSource(['Secret' => '1.0.0']);
+        $this->install('Secret');
+        $file = $this->dir.'/private-state.json';
+        $after = null;
+        $inode = null;
+        $this->manager->atCommit = function () use ($file, &$after, &$inode): void {
+            $this->state()->reset();
+            $after = $this->state()->read();
+            clearstatcache(true, $file);
+            $inode = fileinode($file);
+        };
+
+        $this->assertRefused('Secret is not bound to a private source, so there is nothing to unbind.', fn () => $this->manager->unbind('Secret'));
+
+        clearstatcache(true, $file);
+        $this->assertSame($inode, fileinode($file), 'no state write after the re-check');
+        $this->assertSame($after, $this->state()->read());
+    }
+
     public function testUnbindWorksWhileDown(): void
     {
         $id = $this->privateSource(['Secret' => '1.0.0', 'Other' => '1.0.0']);

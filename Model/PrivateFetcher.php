@@ -131,7 +131,8 @@ class PrivateFetcher extends Base
                     $auth,
                     self::RELEASE_BYTES,
                     false,
-                    ['Accept: application/vnd.github+json', ...self::API_HEADERS]
+                    ['Accept: application/vnd.github+json', ...self::API_HEADERS],
+                    false
                 ), self::RELEASE_FAILED);
                 $assetUrl = GithubUrl::assetUrl($download['owner'], $download['repo'], self::assetId($release, $download['asset']));
                 self::assertTokenHost($assetUrl);
@@ -186,12 +187,15 @@ class PrivateFetcher extends Base
 
     private static function assetId(array $release, string $asset): int
     {
+        // $release is decoded with objects kept (fetchJsonWith(..., false)): a JSON
+        // array of assets is a PHP array and each asset a \stdClass, so a JSON
+        // object in place of the list ({"0": {...}} included) is refused.
+        $assets = $release['assets'] ?? null;
         $matches = array_values(array_filter(
-            // A JSON object is not a release asset list.
-            is_array($release['assets'] ?? null) && array_is_list($release['assets']) ? $release['assets'] : [],
-            static fn ($entry): bool => is_array($entry) && ($entry['name'] ?? null) === $asset
+            is_array($assets) ? $assets : [],
+            static fn ($entry): bool => $entry instanceof \stdClass && ($entry->name ?? null) === $asset
         ));
-        $id = $matches[0]['id'] ?? null;
+        $id = $matches[0]->id ?? null;
         if (count($matches) !== 1 || ! is_int($id) || $id <= 0) {
             throw new ModMenuException(e(self::NO_ASSET, $asset));
         }
