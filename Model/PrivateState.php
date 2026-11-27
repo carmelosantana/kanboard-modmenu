@@ -302,9 +302,15 @@ class PrivateState extends Base
         return (string) $this->configModel->get(self::MARKER, '');
     }
 
+    /**
+     * The marker straight from the settings table: when the state file is
+     * missing it decides between initial and damaged state, so it must not
+     * come from Kanboard's per-request config cache (another request may have
+     * set it since this one first read the config).
+     */
     private function markerValue(): string
     {
-        return (string) $this->configModel->get(self::MARKER, '');
+        return (string) $this->configModel->getOption(self::MARKER, '');
     }
 
     /**

@@ -132,6 +132,23 @@ class PrivateStateTest extends Base
         $state->read();
     }
 
+    public function testMarkerSetByAnotherRequestIsSeenPastTheRequestCache()
+    {
+        $this->container['memoryCache']->flush();
+        $state = new PrivateState($this->container, $this->dir);
+        $this->assertFalse($state->isDamaged(), 'unset marker, no file: initial state (and cached)');
+        $this->assertSame('', (string) $this->container['configModel']->get(PrivateState::MARKER, ''));
+
+        // Another request records the marker, then fails to write the file. save()
+        // goes straight to the settings table; this request's cache still says unset.
+        $this->container['configModel']->save([PrivateState::MARKER => '1']);
+        $this->assertSame('', (string) $this->container['configModel']->get(PrivateState::MARKER, ''), 'cache is stale');
+
+        $this->assertTrue($state->isDamaged());
+        $this->expectException(PrivateStateDamaged::class);
+        $state->read();
+    }
+
     public function testDeletedFileAfterInitializationIsDamaged()
     {
         $state = new PrivateState($this->container, $this->dir);
