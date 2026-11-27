@@ -161,15 +161,16 @@ class DirectoryClient extends Base
      * entry and set only on private ones. Entries with an invalid name, and
      * private entries without a valid sha256 or whose download is not a
      * release in the source's GitHub account, are dropped with a source error.
-     * A key listed by more than one source, or more than once by one private
-     * source, is dropped with an error; public-only duplicates keep the first
-     * entry (1.6.0). For a key bound to a private source only that source's
-     * entries count. Quarantined keys are dropped.
+     * A rejected private entry still counts as a listing (never offered).
+     * A key listed more than once is dropped with an error when any listing
+     * is private or $privateConfigured; otherwise the first entry wins
+     * (1.6.0). For a key bound to a private source only that source's
+     * listings count. Quarantined keys are dropped.
      *
      * @param array<string, string> $bindings plugin key => source id
      * @param string[] $quarantined plugin keys
      */
-    public function merge(array $sourcesData, array $installedMap, array $bindings = [], array $quarantined = [], array &$errors = []): array
+    public function merge(array $sourcesData, array $installedMap, array $bindings = [], array $quarantined = [], array &$errors = [], bool $privateConfigured = false): array
     {
         $candidates = [];
         foreach ($sourcesData as $source) {
@@ -192,6 +193,7 @@ class DirectoryClient extends Base
                     $problem = self::privateEntryProblem($entry, $owner);
                     if ($problem !== null) {
                         $errors[] = ['url' => $url, 'message' => e($problem, $name)];
+                        $candidates[$key][] = ['entry' => null, 'name' => $name, 'id' => $id];
                         continue;
                     }
                     $entry['private'] = true;
@@ -200,7 +202,7 @@ class DirectoryClient extends Base
                 }
 
                 $entry['source_url'] = $url;
-                $candidates[$key][] = ['entry' => $entry, 'id' => $id];
+                $candidates[$key][] = ['entry' => $entry, 'name' => $name, 'id' => $id];
             }
         }
 
@@ -219,12 +221,15 @@ class DirectoryClient extends Base
             }
 
             $private = array_filter($listed, static fn (array $c) => $c['id'] !== null) !== [];
-            if (count($listed) > 1 && $private) {
-                $errors[] = ['url' => '', 'message' => e('%s is listed by more than one source', $listed[0]['entry']['name'])];
+            if (count($listed) > 1 && ($private || $privateConfigured)) {
+                $errors[] = ['url' => '', 'message' => e('%s is listed by more than one source', $listed[0]['name'])];
                 continue;
             }
 
             $entry = $listed[0]['entry'];
+            if ($entry === null) {
+                continue;
+            }
             $byKey[$key] = $this->normalizeEntries([$entry], $entry['source_url'], $installedMap)[0];
         }
 
@@ -302,10 +307,10 @@ class DirectoryClient extends Base
 
         try {
             $doc = $state->read();
-            $duplicates = $sourceRepo->duplicateKeys();
+            $duplicates = $sourceRepo->duplicateKeysIn($doc);
         } catch (PrivateStateDamaged $e) {
             $doc = null;
-            $duplicates = [];
+            $duplicates = $sourceRepo->duplicateKeysIn(['sources' => []]);
         }
 
         $sourcesData = [];
@@ -357,12 +362,12 @@ class DirectoryClient extends Base
                     }
                     return $fresh;
                 });
-                $snapshot = ['epoch' => $written['epoch'], 'generation' => $written['generation']];
+                // Any source change while fetching (its generation moved) makes this catalog stale; the
+                // snapshot stays the pre-fetch one so a later mutation refuses it too. Names of a source
+                // removed meanwhile are discarded.
+                $stale = $written['epoch'] !== $doc['epoch'] || $written['generation'] !== $doc['generation'];
                 $sources = $written['sources'];
-                $recorded = array_intersect_key($fetched, $sources);
-                // A source removed while it was fetched: its names are discarded and this catalog is not current.
-                $stale = count($recorded) !== count($fetched);
-                $fetched = $recorded;
+                $fetched = array_intersect_key($fetched, $sources);
             } catch (\Throwable $e) {
                 foreach ($fetched as $source) {
                     $errors[] = ['url' => $source['url'], 'message' => e(self::NOT_RECORDED)];
@@ -377,7 +382,7 @@ class DirectoryClient extends Base
         $privateOk = ! $stale && $quarantined === [] && array_diff_key($sources, $fetched) === [];
 
         return [
-            'plugins' => $this->merge(array_merge($sourcesData, array_values($fetched)), $installedMap, $doc['bindings'], $quarantined, $errors),
+            'plugins' => $this->merge(array_merge($sourcesData, array_values($fetched)), $installedMap, $doc['bindings'], $quarantined, $errors, $doc['sources'] !== []),
             'errors' => $errors,
             'private_ok' => $privateOk,
             'frozen' => false,

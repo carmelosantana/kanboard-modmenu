@@ -183,6 +183,7 @@ class DirectoryClientTest extends Base
     {
         $id = $this->addPrivate(self::PRIVATE_URL);
         $kept = $this->addPrivate(self::OTHER_PRIVATE_URL);
+        $before = $this->state()->read();
         $this->publicListing([['name' => 'Alpha']]);
         $this->fetcher->responses[$id] = [$this->privateEntry('Secret')];
         $this->fetcher->responses[$kept] = [$this->privateEntry('Kept')];
@@ -199,7 +200,8 @@ class DirectoryClientTest extends Base
         $this->assertSame([$kept => ['kept']], $result['listed']);
         $this->assertSame(['Alpha', 'Kept'], array_column($result['plugins'], 'name'));
         $this->assertFalse($result['private_ok']);
-        $this->assertSame(['epoch' => $doc['epoch'], 'generation' => $doc['generation']], $result['snapshot']);
+        $this->assertSame(['epoch' => $before['epoch'], 'generation' => $before['generation']], $result['snapshot']);
+        $this->assertNotSame($before['generation'], $doc['generation']);
     }
 
     public function testFailedSeenWriteQuarantinesNamesAndSetsPrivateNotOk(): void
@@ -370,6 +372,97 @@ class DirectoryClientTest extends Base
         $this->assertFalse($result['private_ok']);
         $this->assertSame([], $result['plugins']);
         $this->assertArrayHasKey($id, $this->state()->read()['sources']);
+    }
+
+    public function testPublicDuplicatesCollideWhileAPrivateSourceIsConfigured(): void
+    {
+        $id = $this->addPrivate(self::PRIVATE_URL);
+        $other = 'https://other.example/plugins.json';
+        $this->container['configModel']->save([SourceRepository::CONFIG_KEY => json_encode([self::PUBLIC_URL, $other])]);
+        $this->container['memoryCache']->flush();
+        $listings = [
+            self::PUBLIC_URL => [['name' => 'Shared'], ['name' => 'Alpha'], ['name' => 'Twice'], ['name' => 'twice']],
+            $other => [['name' => 'SHARED']],
+        ];
+        $this->container['modMenuDirectoryDownloader'] = new ArchiveDownloader(
+            static fn () => ['140.82.112.3'],
+            static function ($url, $address, $header, $write) use ($listings) {
+                $write(null, json_encode($listings[$url]));
+                return [200, null];
+            }
+        );
+        $this->fetcher->responses[$id] = [$this->privateEntry('Secret')];
+
+        $result = $this->client->fetchAll();
+
+        $this->assertSame(['Alpha', 'Secret'], array_column($result['plugins'], 'name'));
+        $this->assertSame([
+            ['url' => '', 'message' => 'Shared is listed by more than one source'],
+            ['url' => '', 'message' => 'Twice is listed by more than one source'],
+        ], $result['errors']);
+    }
+
+    public function testRejectedPrivateEntryStillCollides(): void
+    {
+        $id = $this->addPrivate(self::PRIVATE_URL);
+        $this->publicListing([['name' => 'Foo'], ['name' => 'Bar'], ['name' => 'Alpha']]);
+        $this->fetcher->responses[$id] = [
+            $this->privateEntry('Foo', ['sha256' => 'bad']),
+            $this->privateEntry('Bar', ['download' => 'https://github.com/mallory/bar/releases/download/v1/Bar.zip']),
+            $this->privateEntry('Lonely', ['sha256' => 'bad']),
+        ];
+
+        $result = $this->client->fetchAll();
+        $url = GithubUrl::source(self::PRIVATE_URL)['endpoint'];
+
+        $this->assertSame(['Alpha'], array_column($result['plugins'], 'name'));
+        $this->assertSame([
+            ['url' => $url, 'message' => 'Skipped Foo: a private plugin needs a valid sha256 checksum'],
+            ['url' => $url, 'message' => "Skipped Bar: its download is not a release in this source's GitHub account"],
+            ['url' => $url, 'message' => 'Skipped Lonely: a private plugin needs a valid sha256 checksum'],
+            ['url' => '', 'message' => 'Foo is listed by more than one source'],
+            ['url' => '', 'message' => 'Bar is listed by more than one source'],
+        ], $result['errors']);
+    }
+
+    public function testSourceChangeDuringFetchMakesTheResultStale(): void
+    {
+        $id = $this->addPrivate(self::PRIVATE_URL);
+        $before = $this->state()->read();
+        $this->publicListing([['name' => 'Alpha']]);
+        $this->fetcher->responses[$id] = [$this->privateEntry('Secret')];
+        $this->fetcher->during = function () {
+            (new SourceRepository($this->container))->removeSource(self::PUBLIC_URL);
+        };
+
+        $result = $this->client->fetchAll();
+
+        $this->assertFalse($result['private_ok']);
+        $this->assertSame(['epoch' => $before['epoch'], 'generation' => $before['generation']], $result['snapshot']);
+        $this->assertNotSame($before['generation'], $this->state()->read()['generation']);
+    }
+
+    public function testFrozenStateStillFailsDuplicatePublicSourcesClosed(): void
+    {
+        $this->addPrivate(self::PRIVATE_URL);
+        file_put_contents($this->dir.'/private-state.json', '{broken');
+        $dup = 'https://catalog.example/plugins.json';
+        $this->container['configModel']->save([SourceRepository::CONFIG_KEY => json_encode([$dup, 'https://CATALOG.example:443/plugins.json'])]);
+        $this->container['memoryCache']->flush();
+        $this->container['modMenuDirectoryDownloader'] = new ArchiveDownloader(
+            static fn () => ['140.82.112.3'],
+            function () {
+                $this->fail('a duplicate source was fetched');
+            }
+        );
+
+        $result = $this->client->fetchAll();
+
+        $this->assertTrue($result['frozen']);
+        $this->assertSame(
+            ['Duplicate source; remove and re-add it', 'Duplicate source; remove and re-add it'],
+            array_column($result['errors'], 'message')
+        );
     }
 
     public function testListedKeysAreUniqueValidKeysInListingOrder(): void

@@ -82,7 +82,18 @@ class SourceRepository extends Base
      */
     public function duplicateKeys(): array
     {
-        $counts = array_count_values($this->keysOf($this->getSources(), $this->privateState()->read()));
+        return $this->duplicateKeysIn($this->privateState()->read());
+    }
+
+    /**
+     * duplicateKeys() against an already-read state document; pass
+     * ['sources' => []] to check the public list alone.
+     *
+     * @return string[]
+     */
+    public function duplicateKeysIn(array $doc): array
+    {
+        $counts = array_count_values($this->keysOf($this->getSources(), $doc));
 
         return array_keys(array_filter($counts, static fn (int $count) => $count > 1));
     }
