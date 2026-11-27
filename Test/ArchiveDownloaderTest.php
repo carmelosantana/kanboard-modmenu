@@ -509,6 +509,27 @@ class ArchiveDownloaderTest extends TestCase
         $this->assertSame(403, $downloader->lastStatus());
     }
 
+    public function testLastHopIsTheIndexOfTheMostRecentRequestAndResetsPerCall(): void
+    {
+        $calls = 0;
+        $downloader = new ArchiveDownloader(
+            fn () => ['140.82.112.3'],
+            function () use (&$calls) {
+                $calls++;
+                return $calls <= 2 ? [302, 'https://objects.example/x' . $calls] : [403, null];
+            }
+        );
+
+        $this->assertSame(0, $downloader->lastHop());
+        $this->assertRefused($downloader, 'Unable to download the plugin archive.');
+        $this->assertSame(2, $downloader->lastHop());
+        $this->assertSame(403, $downloader->lastStatus());
+
+        $this->assertRefused($downloader, 'Unable to download the plugin archive.');
+        $this->assertSame(0, $downloader->lastHop());
+        $this->assertSame(403, $downloader->lastStatus());
+    }
+
     private function invokeCallback(callable $callback, string $data): mixed
     {
         try {

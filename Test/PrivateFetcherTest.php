@@ -31,6 +31,8 @@ class PrivateFetcherTest extends Base
     private const TAGS_URL = 'https://api.github.com/repos/acme/widget/releases/tags/v1.0.0';
     private const ASSET_URL = 'https://api.github.com/repos/acme/widget/releases/assets/77';
     private const FALLBACK = "Couldn't load this private source.";
+    private const RELEASE_FAILED = "Couldn't download this private plugin's release.";
+    private const SIGNED = 'https://objects.githubusercontent.com/github-production-release-asset/1?X-Amz-Signature=abc';
 
     private object $vault;
     private array $requests = [];
@@ -88,11 +90,14 @@ class PrivateFetcherTest extends Base
         return ['id' => 'source-id', 'url' => self::SOURCE_URL, 'token_ref' => self::REF];
     }
 
-    /** @param array<string, callable(callable): array> $routes URL → handler receiving the write callback. */
-    private function downloader(array $routes): ArchiveDownloader
+    /**
+     * @param array<string, callable(callable): array> $routes URL → handler receiving the write callback.
+     * @param array<string, string> $addresses Host → resolved address; every other host is public.
+     */
+    private function downloader(array $routes, array $addresses = []): ArchiveDownloader
     {
         return new ArchiveDownloader(
-            static fn () => ['140.82.112.3'],
+            static fn ($host) => [$addresses[$host] ?? '140.82.112.3'],
             function ($url, $address, $header, $write, $headers) use ($routes) {
                 $this->requests[] = ['url' => $url, 'headers' => $headers];
                 if (! isset($routes[$url])) {
@@ -103,14 +108,14 @@ class PrivateFetcherTest extends Base
         );
     }
 
-    private function useDirectoryRoutes(array $routes): void
+    private function useDirectoryRoutes(array $routes, array $addresses = []): void
     {
-        $this->container['modMenuDirectoryDownloader'] = $this->downloader($routes);
+        $this->container['modMenuDirectoryDownloader'] = $this->downloader($routes, $addresses);
     }
 
-    private function useReleaseRoutes(array $routes): void
+    private function useReleaseRoutes(array $routes, array $addresses = []): void
     {
-        $this->container['modMenuArchiveDownloader'] = $this->downloader($routes);
+        $this->container['modMenuArchiveDownloader'] = $this->downloader($routes, $addresses);
     }
 
     private static function json(mixed $value, int $status = 200): callable
@@ -382,8 +387,101 @@ class PrivateFetcherTest extends Base
         $e = $this->failure(fn () => $this->fetcher()->downloadRelease($this->source(), self::DOWNLOAD));
 
         $this->assertSame([self::TAGS_URL], array_column($this->requests, 'url'));
-        $this->assertStringNotContainsString(self::TOKEN, $e->getMessage());
+        $this->assertSame(self::RELEASE_FAILED, $e->getMessage());
         $this->assertNull($e->getPrevious());
+    }
+
+    public function testAllowlistedTransportMessagesPassThrough(): void
+    {
+        $internal = 'https://internal.example/plugins.json';
+        $cases = [
+            "Couldn't load this directory listing." => self::json(['error' => 'x'], 500),
+            'This directory listing is not valid JSON.' => static function ($write) {
+                $write(null, '{');
+                return [200, null];
+            },
+            'The download was refused: internal.example is not a public address.' => static fn () => [302, $internal],
+        ];
+        foreach ($cases as $message => $route) {
+            $this->useDirectoryRoutes([self::ENDPOINT => $route], ['internal.example' => '127.0.0.1']);
+            $e = $this->failure(fn () => $this->fetcher()->fetchDirectory($this->source()));
+            $this->assertSame($message, $e->getMessage());
+            $this->assertNull($e->getPrevious());
+        }
+
+        $this->useReleaseRoutes([
+            self::TAGS_URL => self::release([['id' => 77, 'name' => 'Widget-1.0.0.zip']]),
+            self::ASSET_URL => static fn () => [302, 'https://internal.example/Widget.zip'],
+        ], ['internal.example' => '127.0.0.1']);
+        $e = $this->failure(fn () => $this->fetcher()->downloadRelease($this->source(), self::DOWNLOAD));
+        $this->assertSame('The download was refused: internal.example is not a public address.', $e->getMessage());
+    }
+
+    public function testReleaseTransportFailuresUseReleaseMessage(): void
+    {
+        $release = self::release([['id' => 77, 'name' => 'Widget-1.0.0.zip']]);
+        $cases = [
+            'tags 3xx' => [self::TAGS_URL => static fn () => [302, self::TAGS_URL . '-moved']],
+            'tags 500' => [self::TAGS_URL => self::json([], 500)],
+            'invalid tags JSON' => [self::TAGS_URL => static function ($write) {
+                $write(null, '[');
+                return [200, null];
+            }],
+            'asset 500' => [self::TAGS_URL => $release, self::ASSET_URL => self::json([], 500)],
+            'asset aborted' => [self::TAGS_URL => $release, self::ASSET_URL => static function ($write) {
+                $write(null, 'PK');
+                return [0, null];
+            }],
+            'asset transport throws' => [self::TAGS_URL => $release, self::ASSET_URL => static function () {
+                throw new \RuntimeException('socket');
+            }],
+        ];
+        foreach ($cases as $name => $routes) {
+            $this->useReleaseRoutes($routes);
+            $e = $this->failure(fn () => $this->fetcher()->downloadRelease($this->source(), self::DOWNLOAD));
+            $this->assertSame(self::RELEASE_FAILED, $e->getMessage(), $name);
+            $this->assertNull($e->getPrevious(), $name);
+        }
+    }
+
+    public function testCdnRefusalAfterAssetRedirectIsNotATokenRefusal(): void
+    {
+        foreach ([401, 403, 404] as $status) {
+            $this->requests = [];
+            $this->useReleaseRoutes([
+                self::TAGS_URL => self::release([['id' => 77, 'name' => 'Widget-1.0.0.zip']]),
+                self::ASSET_URL => static fn () => [302, self::SIGNED],
+                self::SIGNED => static fn () => [$status, null],
+            ]);
+            $e = $this->failure(fn () => $this->fetcher()->downloadRelease($this->source(), self::DOWNLOAD));
+            $this->assertSame(self::RELEASE_FAILED, $e->getMessage(), (string) $status);
+            $this->assertSame([self::TAGS_URL, self::ASSET_URL, self::SIGNED], array_column($this->requests, 'url'));
+        }
+
+        $cdn = 'https://cdn.example/plugins.json';
+        $this->useDirectoryRoutes([self::ENDPOINT => static fn () => [302, $cdn], $cdn => static fn () => [403, null]]);
+        $e = $this->failure(fn () => $this->fetcher()->fetchDirectory($this->source()));
+        $this->assertSame("Couldn't load this directory listing.", $e->getMessage());
+    }
+
+    public function testMessageCarryingTheTokenFallsBack(): void
+    {
+        $token = 'tokentokentokentoken42';
+        $host = $token . '.example';
+        $this->container['vaultSecrets'] = $this->fakeVault($token);
+
+        $this->useDirectoryRoutes([self::ENDPOINT => static fn () => [302, 'https://' . $host . '/plugins.json']], [$host => '127.0.0.1']);
+        $e = $this->failure(fn () => $this->fetcher()->fetchDirectory($this->source()));
+        $this->assertSame(self::FALLBACK, $e->getMessage());
+        $this->assertNull($e->getPrevious());
+
+        $this->useReleaseRoutes([
+            self::TAGS_URL => self::release([['id' => 77, 'name' => 'Widget-1.0.0.zip']]),
+            self::ASSET_URL => static fn () => [302, 'https://' . $host . '/Widget.zip'],
+        ], [$host => '127.0.0.1']);
+        $e = $this->failure(fn () => $this->fetcher()->downloadRelease($this->source(), self::DOWNLOAD));
+        $this->assertSame(self::RELEASE_FAILED, $e->getMessage());
+        $this->assertStringNotContainsString($token, $e->getTraceAsString());
     }
 
     public function testOwnerMismatchRefused(): void

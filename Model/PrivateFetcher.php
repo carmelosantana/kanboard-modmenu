@@ -22,6 +22,7 @@ class PrivateFetcher extends Base
     private const API_HEADERS = ['X-GitHub-Api-Version: 2022-11-28'];
 
     private const FALLBACK = "Couldn't load this private source.";
+    private const RELEASE_FAILED = "Couldn't download this private plugin's release.";
     private const NOT_A_SOURCE = "This private source's URL is not a GitHub source URL.";
     private const NOT_A_TOKEN = 'The token in Vault is not a GitHub token';
     private const OTHER_ACCOUNT = "This private plugin's download is not in its source's GitHub account";
@@ -58,12 +59,21 @@ class PrivateFetcher extends Base
         'The download URL must be a valid https:// URL.',
         'The download was refused: %s is not a public address.',
         self::FALLBACK,
+        self::RELEASE_FAILED,
         self::NOT_A_SOURCE,
         self::NOT_A_TOKEN,
         self::OTHER_ACCOUNT,
         self::NO_ASSET,
         self::REFUSED,
         self::VAULT_FALLBACK,
+    ];
+
+    /** ArchiveDownloader's generic failures, worded for directory listings; a release reports RELEASE_FAILED instead. */
+    private const GENERIC_TRANSPORT_MESSAGES = [
+        'Unable to download the plugin archive.',
+        "Couldn't load this directory listing.",
+        'The directory listing is larger than %d MB.',
+        'This directory listing is not valid JSON.',
     ];
 
     /**
@@ -78,8 +88,9 @@ class PrivateFetcher extends Base
 
         $repository = $parsed['owner'] . '/' . $parsed['repo'];
 
-        return $this->boundary(fn (): array => $this->withToken(
+        return $this->boundary(self::FALLBACK, fn (): array => $this->withToken(
             (string) $source['token_ref'],
+            self::FALLBACK,
             static fn (#[\SensitiveParameter] array $auth): array => self::github(
                 $downloader,
                 $repository,
@@ -111,8 +122,9 @@ class PrivateFetcher extends Base
         $downloader = $this->container['modMenuArchiveDownloader'] ?? new ArchiveDownloader();
         $repository = $download['owner'] . '/' . $download['repo'];
 
-        return $this->boundary(fn (): string => $this->withToken(
+        return $this->boundary(self::RELEASE_FAILED, fn (): string => $this->withToken(
             (string) $source['token_ref'],
+            self::RELEASE_FAILED,
             static function (#[\SensitiveParameter] array $auth) use ($downloader, $download, $repository, $tagsUrl): string {
                 $release = self::github($downloader, $repository, static fn (): array => $downloader->fetchJsonWith(
                     $tagsUrl,
@@ -120,7 +132,7 @@ class PrivateFetcher extends Base
                     self::RELEASE_BYTES,
                     false,
                     ['Accept: application/vnd.github+json', ...self::API_HEADERS]
-                ));
+                ), self::RELEASE_FAILED);
                 $assetUrl = GithubUrl::assetUrl($download['owner'], $download['repo'], self::assetId($release, $download['asset']));
                 self::assertTokenHost($assetUrl);
 
@@ -128,7 +140,7 @@ class PrivateFetcher extends Base
                     $assetUrl,
                     $auth,
                     ['Accept: application/octet-stream', ...self::API_HEADERS]
-                ));
+                ), self::RELEASE_FAILED);
             }
         ));
     }
@@ -183,9 +195,10 @@ class PrivateFetcher extends Base
 
     /**
      * Reads the token once, passes the operation its hop-0 Authorization
-     * header, and drops the revealed string afterwards (best effort).
+     * header, and drops the revealed string afterwards (best effort). A
+     * failure whose message contains the token becomes $fallback.
      */
-    private function withToken(string $ref, callable $operation): mixed
+    private function withToken(string $ref, string $fallback, callable $operation): mixed
     {
         $vault = $this->vault();
         if ($vault === null) {
@@ -203,7 +216,15 @@ class PrivateFetcher extends Base
             if (! is_string($token) || preg_match(self::TOKEN, $token) !== 1) {
                 throw new ModMenuException(e(self::NOT_A_TOKEN));
             }
-            return $operation(['Authorization: Bearer ' . $token]);
+            try {
+                return $operation(['Authorization: Bearer ' . $token]);
+            } catch (\Throwable $e) {
+                if (str_contains($e->getMessage(), $token)) {
+                    unset($e);
+                    throw new ModMenuException(e($fallback));
+                }
+                throw $e;
+            }
         } finally {
             $token = null;
         }
@@ -217,9 +238,9 @@ class PrivateFetcher extends Base
 
     /**
      * Runs private network work and rethrows any failure as a new
-     * ModMenuException with a fixed message and no previous exception.
+     * ModMenuException with a fixed message (or $fallback) and no previous exception.
      */
-    private function boundary(callable $operation): mixed
+    private function boundary(string $fallback, callable $operation): mixed
     {
         try {
             return $operation();
@@ -231,20 +252,28 @@ class PrivateFetcher extends Base
 
         if ($reason !== null) {
             $message = e(self::VAULT_MESSAGES[$reason] ?? self::VAULT_FALLBACK);
-        } elseif ($message === null || ! self::isAllowed($message)) {
-            $message = e(self::FALLBACK);
+        } elseif ($message === null || ! self::matches($message, [...self::ALLOWED_MESSAGES, ...array_values(self::VAULT_MESSAGES)])) {
+            $message = e($fallback);
         }
         throw new ModMenuException($message);
     }
 
-    /** Runs one GitHub request, reporting a 401, 403 or 404 as GitHub refusing the token. */
-    private static function github(ArchiveDownloader $downloader, string $repository, callable $request): mixed
+    /**
+     * Runs one GitHub request. A 401, 403 or 404 on hop 0, the only hop that
+     * carries the token, is GitHub refusing the token. With $failure, a
+     * generic transport failure is reported as $failure.
+     */
+    private static function github(ArchiveDownloader $downloader, string $repository, callable $request, ?string $failure = null): mixed
     {
         try {
             return $request();
         } catch (\Throwable $e) {
-            if (in_array($downloader->lastStatus(), self::REFUSED_STATUSES, true)) {
+            if ($downloader->lastHop() === 0 && in_array($downloader->lastStatus(), self::REFUSED_STATUSES, true)) {
                 throw new ModMenuException(e(self::REFUSED, $repository));
+            }
+            if ($failure !== null
+                && (! $e instanceof ModMenuException || self::matches($e->getMessage(), self::GENERIC_TRANSPORT_MESSAGES))) {
+                throw new ModMenuException(e($failure));
             }
             throw $e;
         }
@@ -263,9 +292,10 @@ class PrivateFetcher extends Base
         return is_string($reason) ? $reason : null;
     }
 
-    private static function isAllowed(string $message): bool
+    /** @param string[] $formats Untranslated messages; %s and %d match the values they are built with. */
+    private static function matches(string $message, array $formats): bool
     {
-        foreach ([...self::ALLOWED_MESSAGES, ...array_values(self::VAULT_MESSAGES)] as $format) {
+        foreach ($formats as $format) {
             $template = Translator::getInstance()->get($format, $format);
             $pattern = implode('', array_map(
                 static fn (string $part): string => match ($part) {

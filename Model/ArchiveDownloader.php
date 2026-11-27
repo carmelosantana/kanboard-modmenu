@@ -17,6 +17,7 @@ class ArchiveDownloader
     private ?Closure $transport;
     private Closure $clock;
     private int $lastStatus = 0;
+    private int $lastHop = 0;
 
     /**
      * @param callable(string): string[]|null $resolver Resolves all A and AAAA addresses.
@@ -140,6 +141,7 @@ class ArchiveDownloader
         bool $followRedirects = true
     ): string {
         $this->lastStatus = 0;
+        $this->lastHop = 0;
         $deadline = ($this->clock)() + $timeout;
         $remaining = fn (): int => $deadline - ($this->clock)();
         $url = self::checkedUrl($url);
@@ -213,6 +215,7 @@ class ArchiveDownloader
                 [$status, $location] = $transport($url, $address, $header, $write, $hopHeaders, $timeLeft, min($connectTimeout, $timeLeft));
                 unset($hopHeaders);
                 $this->lastStatus = (int) $status;
+                $this->lastHop = $redirects;
                 if (! $canContinue()) {
                     throw new ModMenuException($failure);
                 }
@@ -249,6 +252,12 @@ class ArchiveDownloader
     public function lastStatus(): int
     {
         return $this->lastStatus;
+    }
+
+    /** The index of the most recent request of the latest download: 0 for the first hop, 1 after one redirect, … */
+    public function lastHop(): int
+    {
+        return $this->lastHop;
     }
 
     private static function checkedUrl(string $url): string
