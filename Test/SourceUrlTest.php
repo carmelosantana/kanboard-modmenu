@@ -34,8 +34,15 @@ class SourceUrlTest extends TestCase
             'https://h/x#f',
             'https:///x',
             'not a url',
+            "https://h/a\x01b",
+            'https://ex ample.com/x',
+            "https://h/x\x7f",
+            'https://h:0/x',
+            'HTTP://h/x',
+            'https://u@h/x',
+            'https://h/x#',
         ] as $url) {
-            $this->assertNull(SourceUrl::canonical($url), $url);
+            $this->assertNull(SourceUrl::canonical($url), var_export($url, true));
         }
     }
 
