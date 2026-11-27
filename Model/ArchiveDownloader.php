@@ -16,6 +16,7 @@ class ArchiveDownloader
     private Closure $resolver;
     private ?Closure $transport;
     private Closure $clock;
+    private int $lastStatus = 0;
 
     /**
      * @param callable(string): string[]|null $resolver Resolves all A and AAAA addresses.
@@ -61,27 +62,57 @@ class ArchiveDownloader
     /** The caller owns the returned temporary file. */
     public function download(string $url): string
     {
+        return $this->downloadWith($url, [], []);
+    }
+
+    /**
+     * The caller owns the returned temporary file.
+     *
+     * @param string[] $firstHopHeaders Sent on the first request only, never on a redirect.
+     * @param string[] $headers Sent on every request.
+     */
+    public function downloadWith(string $url, #[\SensitiveParameter] array $firstHopHeaders, array $headers): string
+    {
         return $this->downloadToTemp(
             $url,
             PluginArchive::MAX_ARCHIVE_BYTES,
             t('The plugin archive is larger than 50 MB.'),
             t('Unable to download the plugin archive.'),
             timeout: 120_000,
-            connectTimeout: 10_000
+            connectTimeout: 10_000,
+            headers: $headers,
+            firstHopHeaders: $firstHopHeaders
         );
     }
 
     public function fetchJson(string $url): array
     {
+        return $this->fetchJsonWith($url, [], self::MAX_DIRECTORY_BYTES, true, ['Accept: application/json']);
+    }
+
+    /**
+     * @param string[] $firstHopHeaders Sent on the first request only, never on a redirect.
+     * @param string[] $headers Sent on every request.
+     * @param bool $followRedirects When false, any 3xx response is a failure.
+     */
+    public function fetchJsonWith(
+        string $url,
+        #[\SensitiveParameter] array $firstHopHeaders,
+        int $maxBytes,
+        bool $followRedirects,
+        array $headers
+    ): array {
         $failureMessage = e("Couldn't load this directory listing.");
         $path = $this->downloadToTemp(
             $url,
-            self::MAX_DIRECTORY_BYTES,
-            t('The directory listing is larger than 5 MB.'),
+            $maxBytes,
+            t('The directory listing is larger than %d MB.', intdiv($maxBytes, 1024 * 1024)),
             $failureMessage,
             timeout: 15_000,
             connectTimeout: 5_000,
-            headers: ['Accept: application/json']
+            headers: $headers,
+            firstHopHeaders: $firstHopHeaders,
+            followRedirects: $followRedirects
         );
         try {
             $body = @file_get_contents($path);
@@ -104,8 +135,11 @@ class ArchiveDownloader
         string $failureMessage,
         int $timeout,
         int $connectTimeout,
-        array $headers = []
+        array $headers = [],
+        #[\SensitiveParameter] array $firstHopHeaders = [],
+        bool $followRedirects = true
     ): string {
+        $this->lastStatus = 0;
         $deadline = ($this->clock)() + $timeout;
         $remaining = fn (): int => $deadline - ($this->clock)();
         $url = self::checkedUrl($url);
@@ -174,7 +208,11 @@ class ArchiveDownloader
                 if ($timeLeft <= 0) {
                     throw new ModMenuException($failureMessage);
                 }
-                [$status, $location] = $transport($url, $address, $header, $write, $headers, $timeLeft, min($connectTimeout, $timeLeft));
+                // A redirect never carries the first hop's headers, even back to the same host.
+                $hopHeaders = $redirects === 0 ? array_merge($headers, $firstHopHeaders) : $headers;
+                [$status, $location] = $transport($url, $address, $header, $write, $hopHeaders, $timeLeft, min($connectTimeout, $timeLeft));
+                unset($hopHeaders);
+                $this->lastStatus = (int) $status;
                 if (! $canContinue()) {
                     throw new ModMenuException($failure);
                 }
@@ -183,7 +221,8 @@ class ArchiveDownloader
                     $keep = true;
                     return $path;
                 }
-                if (! in_array($status, [301, 302, 303, 307, 308], true) || $location === null || $location === '') {
+                if (! $followRedirects
+                    || ! in_array($status, [301, 302, 303, 307, 308], true) || $location === null || $location === '') {
                     throw new ModMenuException($failureMessage);
                 }
                 if ($redirects === self::MAX_REDIRECTS) {
@@ -206,10 +245,16 @@ class ArchiveDownloader
         }
     }
 
+    /** The status of the most recent request, or 0 before any request of the latest download. */
+    public function lastStatus(): int
+    {
+        return $this->lastStatus;
+    }
+
     private static function checkedUrl(string $url): string
     {
         $parts = filter_var($url, FILTER_VALIDATE_URL) !== false ? parse_url($url) : [];
-        if (strtolower($parts['scheme'] ?? '') !== 'https' || ($parts['port'] ?? 443) !== 443
+        if (str_contains($url, '#') || strtolower($parts['scheme'] ?? '') !== 'https' || ($parts['port'] ?? 443) !== 443
             || isset($parts['user']) || isset($parts['pass'])) {
             throw new ModMenuException(t('The download URL must be a valid https:// URL.'));
         }
@@ -253,17 +298,44 @@ class ArchiveDownloader
         string $address,
         callable $header,
         callable $write,
-        array $headers,
+        #[\SensitiveParameter] array $headers,
         int $timeout,
         int $connectTimeout
     ): array {
-        $host = parse_url($url, PHP_URL_HOST);
         $curl = curl_init($url);
         if ($curl === false) {
             return [0, null];
         }
 
+        try {
+            if (! curl_setopt_array($curl, self::curlOptions($url, $address, $header, $write, $headers, $timeout, $connectTimeout))
+                || curl_exec($curl) === false) {
+                return [0, null];
+            }
+
+            return [
+                curl_getinfo($curl, CURLINFO_RESPONSE_CODE),
+                // Curl resolves relative Location values without making another request.
+                curl_getinfo($curl, CURLINFO_REDIRECT_URL) ?: null,
+            ];
+        } finally {
+            curl_close($curl);
+        }
+    }
+
+    protected static function curlOptions(
+        string $url,
+        string $address,
+        callable $header,
+        callable $write,
+        #[\SensitiveParameter] array $headers,
+        int $timeout,
+        int $connectTimeout
+    ): array {
+        $host = parse_url($url, PHP_URL_HOST);
         $options = [
+            // Verbose output would copy request headers, including any token, to stderr.
+            CURLOPT_VERBOSE => false,
             CURLOPT_FOLLOWLOCATION => false,
             CURLOPT_PROTOCOLS => CURLPROTO_HTTPS,
             CURLOPT_REDIR_PROTOCOLS => CURLPROTO_HTTPS,
@@ -283,18 +355,6 @@ class ArchiveDownloader
             $options[CURLOPT_RESOLVE] = [$host . ':443:' . $target];
         }
 
-        try {
-            if (! curl_setopt_array($curl, $options) || curl_exec($curl) === false) {
-                return [0, null];
-            }
-
-            return [
-                curl_getinfo($curl, CURLINFO_RESPONSE_CODE),
-                // Curl resolves relative Location values without making another request.
-                curl_getinfo($curl, CURLINFO_REDIRECT_URL) ?: null,
-            ];
-        } finally {
-            curl_close($curl);
-        }
+        return $options;
     }
 }

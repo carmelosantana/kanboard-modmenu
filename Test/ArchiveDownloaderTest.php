@@ -340,6 +340,175 @@ class ArchiveDownloaderTest extends TestCase
         $this->assertSame($before, $this->tempFiles());
     }
 
+    public function testFirstHopHeadersOnlyOnHopZero(): void
+    {
+        $calls = [];
+        $downloader = new ArchiveDownloader(
+            fn () => ['140.82.112.3'],
+            function ($url, $address, $header, $write, $headers) use (&$calls) {
+                $calls[] = $headers;
+                if (count($calls) === 1) {
+                    return [302, 'https://objects.example/x?sig=1'];
+                }
+                $this->assertSame('https://objects.example/x?sig=1', $url);
+                $write(null, 'archive');
+                return [200, null];
+            }
+        );
+
+        $path = $downloader->downloadWith('https://api.github.com/a', ['Authorization: Bearer T'], ['Accept: application/octet-stream']);
+        unlink($path);
+        $this->assertCount(2, $calls);
+        $this->assertSame(['Accept: application/octet-stream', 'Authorization: Bearer T'], $calls[0]);
+        $this->assertSame(['Accept: application/octet-stream'], $calls[1]);
+    }
+
+    public function testRedirectBackToApiHostCarriesNoToken(): void
+    {
+        $calls = [];
+        $downloader = new ArchiveDownloader(
+            fn () => ['140.82.112.3'],
+            function ($url, $address, $header, $write, $headers) use (&$calls) {
+                $calls[] = [$url, $headers];
+                if (count($calls) === 1) {
+                    return [302, 'https://api.github.com/x'];
+                }
+                $write(null, 'archive');
+                return [200, null];
+            }
+        );
+
+        $path = $downloader->downloadWith('https://api.github.com/a', ['Authorization: Bearer T'], []);
+        unlink($path);
+        $this->assertSame(['https://api.github.com/x', []], $calls[1]);
+        $this->assertStringNotContainsString('Authorization', implode("\n", $calls[1][1]));
+    }
+
+    public function testNoRedirectModeRefuses3xx(): void
+    {
+        $before = $this->tempFiles();
+        $calls = 0;
+        $downloader = new ArchiveDownloader(
+            fn () => ['140.82.112.3'],
+            function () use (&$calls) {
+                ++$calls;
+                return [302, 'https://objects.example/x'];
+            }
+        );
+
+        try {
+            $downloader->fetchJsonWith('https://api.github.com/a', ['Authorization: Bearer T'], 1024 * 1024, false, []);
+            $this->fail('Expected the redirect to be refused.');
+        } catch (ModMenuException $e) {
+            $this->assertSame("Couldn't load this directory listing.", $e->getMessage());
+        }
+        $this->assertSame(1, $calls);
+        $this->assertSame($before, $this->tempFiles());
+    }
+
+    public function testRedirectWithFragmentRefused(): void
+    {
+        $calls = 0;
+        $downloader = new ArchiveDownloader(
+            fn () => ['140.82.112.3'],
+            function () use (&$calls) {
+                ++$calls;
+                return [302, 'https://h.example/x#frag'];
+            }
+        );
+
+        $this->assertRefused($downloader, 'The download URL must be a valid https:// URL.');
+        $this->assertSame(1, $calls);
+    }
+
+    public function testInitialUrlWithFragmentRefused(): void
+    {
+        foreach (['https://downloads.example/plugin.zip#x', 'https://downloads.example/plugin.zip#'] as $url) {
+            $downloader = new ArchiveDownloader(
+                fn () => ['140.82.112.3'],
+                fn () => $this->fail('A fragment URL must never reach transport.')
+            );
+            try {
+                $downloader->download($url);
+                $this->fail('Expected the fragment URL to be refused.');
+            } catch (ModMenuException $e) {
+                $this->assertSame('The download URL must be a valid https:// URL.', $e->getMessage());
+            }
+        }
+    }
+
+    public function testFetchJsonWithHonoursByteLimit(): void
+    {
+        $before = $this->tempFiles();
+        $downloader = new ArchiveDownloader(
+            fn () => ['140.82.112.3'],
+            function ($url, $address, $header, $write) {
+                $this->assertSame(1024 * 1024, $this->invokeCallback($write, str_repeat('x', 1024 * 1024)));
+                $this->assertSame(0, $this->invokeCallback($write, 'x'));
+                return [0, null];
+            }
+        );
+
+        try {
+            $downloader->fetchJsonWith('https://api.github.com/a', [], 1024 * 1024, false, []);
+            $this->fail('Expected the oversize body to be refused.');
+        } catch (ModMenuException $e) {
+            $this->assertSame('The directory listing is larger than 1 MB.', $e->getMessage());
+        }
+        $this->assertSame($before, $this->tempFiles());
+    }
+
+    public function testFetchJsonWithDecodesAndSendsHeaders(): void
+    {
+        $downloader = new ArchiveDownloader(
+            fn () => ['140.82.112.3'],
+            function ($url, $address, $header, $write, $headers) {
+                $this->assertSame(['Accept: application/vnd.github+json', 'Authorization: Bearer T'], $headers);
+                $write(null, '{"assets":[]}');
+                return [200, null];
+            }
+        );
+
+        $this->assertSame(
+            ['assets' => []],
+            $downloader->fetchJsonWith('https://api.github.com/a', ['Authorization: Bearer T'], 1024 * 1024, false, ['Accept: application/vnd.github+json'])
+        );
+    }
+
+    public function testVerboseIsOff(): void
+    {
+        $options = (new ReflectionMethod(ArchiveDownloader::class, 'curlOptions'))->invoke(
+            null,
+            'https://api.github.com/a',
+            '140.82.112.3',
+            fn () => 0,
+            fn () => 0,
+            ['Authorization: Bearer T'],
+            1000,
+            1000
+        );
+
+        $this->assertArrayHasKey(CURLOPT_VERBOSE, $options);
+        $this->assertFalse($options[CURLOPT_VERBOSE]);
+        $this->assertArrayNotHasKey(CURLINFO_HEADER_OUT, $options);
+        $this->assertSame(['api.github.com:443:140.82.112.3'], $options[CURLOPT_RESOLVE]);
+    }
+
+    public function testLastStatusIsTheFinalHopStatus(): void
+    {
+        $calls = 0;
+        $downloader = new ArchiveDownloader(
+            fn () => ['140.82.112.3'],
+            function () use (&$calls) {
+                return ++$calls === 1 ? [302, 'https://objects.example/x'] : [403, null];
+            }
+        );
+
+        $this->assertSame(0, $downloader->lastStatus());
+        $this->assertRefused($downloader, 'Unable to download the plugin archive.');
+        $this->assertSame(403, $downloader->lastStatus());
+    }
+
     private function invokeCallback(callable $callback, string $data): mixed
     {
         try {
