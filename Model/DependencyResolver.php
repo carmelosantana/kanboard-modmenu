@@ -13,9 +13,32 @@ use Kanboard\Core\Base;
  *
  * A "dep object" is ['plugin' => string, 'min_version' => ?string, 'reason' => ?string].
  * A plugin declares two arrays of them: `requires` (hard) and `recommends` (soft).
+ *
+ * A private dependant passes its source id: its dependencies then resolve only
+ * from entries of that source or from installed plugins, and anything else is
+ * unresolvable ("Install it yourself first").
  */
 class DependencyResolver extends Base
 {
+    public const INSTALL_IT_YOURSELF = 'Install it yourself first';
+
+    /** The catalog a dependant from $sourceId may resolve from (all of it when public). */
+    public static function catalogFor(array $catalog, ?string $sourceId): array
+    {
+        if ($sourceId === null) {
+            return $catalog;
+        }
+        return array_filter($catalog, static fn ($entry) => is_array($entry)
+            && ! empty($entry['private']) && ($entry['source_id'] ?? null) === $sourceId);
+    }
+
+    /** The source id of a private catalog entry, or null. */
+    private static function sourceOf($entry): ?string
+    {
+        return is_array($entry) && ! empty($entry['private']) && is_string($entry['source_id'] ?? null)
+            ? $entry['source_id'] : null;
+    }
+
     /**
      * Prefer an installed successor, with an active one ahead of a disabled one.
      */
@@ -129,8 +152,9 @@ class DependencyResolver extends Base
     /**
      * Resolve a plugin's declared deps of one kind ('requires' | 'recommends').
      */
-    public function resolveForward(array $deps, string $kind, array $installedMap, array $catalog): array
+    public function resolveForward(array $deps, string $kind, array $installedMap, array $catalog, ?string $sourceId = null): array
     {
+        $catalog = self::catalogFor($catalog, $sourceId);
         $resolved  = [];
         $satisfied = true;
         foreach ($deps as $dep) {
@@ -183,16 +207,17 @@ class DependencyResolver extends Base
      * @param array $requires  the starting plugin's `requires` list
      * @return array list of ['plugin','action','download','min_version']
      */
-    public function resolveClosure(array $requires, array $installedMap, array $catalog): array
+    public function resolveClosure(array $requires, array $installedMap, array $catalog, ?string $sourceId = null): array
     {
         $plan = [];
         $seen = [];
-        $this->walk($requires, $installedMap, $catalog, $plan, $seen);
+        $this->walk($requires, $installedMap, $catalog, $plan, $seen, $sourceId);
         return array_values($plan);
     }
 
-    private function walk(array $requires, array $installedMap, array $catalog, array &$plan, array &$seen): void
+    private function walk(array $requires, array $installedMap, array $fullCatalog, array &$plan, array &$seen, ?string $sourceId): void
     {
+        $catalog = self::catalogFor($fullCatalog, $sourceId);
         foreach ($requires as $dep) {
             if (! is_array($dep) || empty($dep['plugin'])) {
                 continue;
@@ -213,7 +238,7 @@ class DependencyResolver extends Base
             // plan is deps-first (post-order): grandchildren before children.
             $childRequires = $catalog[$target]['requires'] ?? [];
             if (is_array($childRequires) && $childRequires !== []) {
-                $this->walk($childRequires, $installedMap, $catalog, $plan, $seen);
+                $this->walk($childRequires, $installedMap, $fullCatalog, $plan, $seen, self::sourceOf($catalog[$target] ?? null));
             }
 
             // A requirement naming the successor directly can impose its own version floor.
@@ -226,6 +251,9 @@ class DependencyResolver extends Base
                 'download'    => $c['download'],
                 'min_version' => $c['min_version'],
             ];
+            if ($sourceId !== null && $c['action'] === 'unresolvable') {
+                $plan[$target]['reason'] = self::INSTALL_IT_YOURSELF;
+            }
         }
     }
 }

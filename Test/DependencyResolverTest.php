@@ -369,4 +369,54 @@ class DependencyResolverTest extends Base
         sort($plugins);
         $this->assertSame(['A', 'B'], $plugins, 'each node appears exactly once, no infinite recursion');
     }
+    // ---- private source restriction ----
+    private const SOURCE_A = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    private const SOURCE_B = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+
+    private function privateEntry(string $source, array $extra = []): array
+    {
+        return ['version' => '1.0.0', 'download' => 'https://x/p.zip', 'private' => true, 'source_id' => $source] + $extra;
+    }
+
+    public function testPrivateDependantResolvesOnlyFromItsOwnSource()
+    {
+        $catalog = [
+            'Public' => ['version' => '1.0.0', 'download' => 'https://x/public.zip'],
+            'Other' => $this->privateEntry(self::SOURCE_B),
+            'Mine' => $this->privateEntry(self::SOURCE_A),
+        ];
+        $plan = $this->resolver->resolveClosure([$this->dep('Public'), $this->dep('Other'), $this->dep('Mine')], [], $catalog, self::SOURCE_A);
+
+        $this->assertSame([
+            ['plugin' => 'Public', 'action' => 'unresolvable', 'download' => null, 'min_version' => null, 'reason' => 'Install it yourself first'],
+            ['plugin' => 'Other', 'action' => 'unresolvable', 'download' => null, 'min_version' => null, 'reason' => 'Install it yourself first'],
+            ['plugin' => 'Mine', 'action' => 'install', 'download' => 'https://x/p.zip', 'min_version' => null],
+        ], $plan);
+
+        $forward = $this->resolver->resolveForward([$this->dep('Public')], 'requires', [], $catalog, self::SOURCE_A);
+        $this->assertSame('unresolvable', $forward['deps'][0]['action']);
+        $this->assertNull($forward['deps'][0]['download']);
+    }
+
+    public function testInstalledPluginSatisfiesAPrivateDependant()
+    {
+        $map = ['Public' => ['version' => '2.0.0', 'status' => 'active']];
+        $catalog = ['Public' => ['version' => '3.0.0', 'download' => 'https://x/public.zip']];
+
+        $this->assertSame([], $this->resolver->resolveClosure([$this->dep('Public', '1.0.0')], $map, $catalog, self::SOURCE_A));
+        $this->assertTrue($this->resolver->resolveForward([$this->dep('Public')], 'requires', $map, $catalog, self::SOURCE_A)['satisfied']);
+    }
+
+    public function testPrivateDependencyRestrictsItsOwnRequirementsToItsSource()
+    {
+        $catalog = [
+            'Mine' => $this->privateEntry(self::SOURCE_A, ['requires' => [['plugin' => 'Helper']]]),
+            'Helper' => ['version' => '1.0.0', 'download' => 'https://x/helper.zip'],
+        ];
+        $plan = $this->resolver->resolveClosure([$this->dep('Mine')], [], $catalog);
+
+        $this->assertSame(['Helper', 'Mine'], array_column($plan, 'plugin'));
+        $this->assertSame(['unresolvable', 'install'], array_column($plan, 'action'));
+        $this->assertSame('Install it yourself first', $plan[0]['reason']);
+    }
 }
