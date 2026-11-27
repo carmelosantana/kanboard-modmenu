@@ -545,6 +545,51 @@ class PrivateInstallTest extends Base
         $this->assertDirectoryExists($this->disabled.'/Secret');
     }
 
+    public function testBindingDecidesTheRootDependencySource(): void
+    {
+        $a = $this->privateSource(['Secret' => '1.0.0']);
+        $this->install('Secret');
+        $this->manager->disable('Secret');
+        file_put_contents($this->disabled.'/Secret/plugin.json', json_encode(['name' => 'Secret', 'version' => '1.0.0', 'requires' => [['plugin' => 'Helper']]]));
+        $b = $this->addPrivate(self::OTHER_URL, []);
+        $this->fetcher->listings[$b] = [$this->privateEntry('Helper', '1.0.0')];
+        $result = $this->fetch();
+        $catalog = $result['plugins'];
+        $this->assertSame($b, $catalog['Helper']['source_id']);
+        $catalog['Secret']['source_id'] = $b;
+        $this->manager->setCatalog($catalog, new MutationGuard($this->container, $result));
+        $plan = [['plugin' => 'Helper', 'action' => 'install', 'download' => $catalog['Helper']['download'], 'min_version' => null]];
+
+        $this->assertRefused(PluginManager::MIGRATION_PLAN_CHANGED_MESSAGE, fn () => $this->manager->resolveAndActivate('Secret', 'enable', '', $plan));
+
+        $this->assertDirectoryDoesNotExist($this->active.'/Helper');
+        $this->assertDirectoryExists($this->disabled.'/Secret');
+        $this->assertSame(['secret' => $a], $this->bindings());
+        $this->assertCount(1, $this->fetcher->downloads);
+    }
+
+    public function testEnabledBoundDependencyGetsItsRequirementsFromItsSource(): void
+    {
+        $this->privateSource(['Inner' => '1.0.0']);
+        $this->install('Inner');
+        $this->manager->disable('Inner');
+        file_put_contents($this->disabled.'/Inner/plugin.json', json_encode(['name' => 'Inner', 'version' => '1.0.0', 'requires' => [['plugin' => 'Helper']]]));
+        $this->publicPlugin('Helper', '1.0.0');
+        $this->publicPlugin('Pub', '1.0.0');
+        $result = $this->fetch();
+        $this->manager->setCatalog($result['plugins'], new MutationGuard($this->container, $result));
+        $plan = [
+            ['plugin' => 'Helper', 'action' => 'install', 'download' => $this->publicDownload('Helper', '1.0.0'), 'min_version' => null],
+            ['plugin' => 'Inner', 'action' => 'enable', 'download' => null, 'min_version' => null],
+        ];
+
+        $this->assertRefused(PluginManager::MIGRATION_PLAN_CHANGED_MESSAGE, fn () => $this->manager->resolveAndActivate('Pub', 'install', $this->publicDownload('Pub', '1.0.0'), $plan));
+
+        $this->assertDirectoryDoesNotExist($this->active.'/Helper');
+        $this->assertDirectoryDoesNotExist($this->active.'/Pub');
+        $this->assertDirectoryExists($this->disabled.'/Inner');
+    }
+
     public function testNestedPrivateDependencyInACallerPlanRefused(): void
     {
         $id = $this->privateSource([]);

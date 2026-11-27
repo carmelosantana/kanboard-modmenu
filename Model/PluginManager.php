@@ -289,7 +289,8 @@ class PluginManager extends Base
             throw new ModMenuException(e(self::MIGRATION_SELF_UPDATE_MESSAGE));
         }
         $this->prepareMigration($old, $catalog);
-        $this->assertPlanSources($check['plan'], self::privateSourceOf($catalog[$successor] ?? null));
+        $doc = $this->privateState()->read();
+        $this->assertPlanSources($check['plan'], $this->dependencySource($successor, $doc), $doc);
         $this->assertMigrationConflicts($old, $successor, $catalog);
         if ($check['blocked'] || (! $check['satisfied'] && ! $dependenciesConfirmed)) {
             throw new ModMenuException(t('"%s" has unmet requirements.', $successor));
@@ -1300,10 +1301,7 @@ class PluginManager extends Base
     {
         $this->guard()->assertCanStart();
         $this->withPluginLocks(array_merge([$name], self::planPlugins($plan)), fn () => $this->guard()->underCatalog(function (array $doc) use ($name, $action, $target, $plan): void {
-            $key = PluginName::key($name);
-            $source = self::privateSourceOf($this->catalog[$name] ?? null)
-                ?? ($key === null ? null : ($doc['bindings'][$key] ?? null));
-            $this->assertPlanSources($plan, $source);
+            $this->assertPlanSources($plan, $this->dependencySource($name, $doc), $doc);
             $this->resolveDependencies($plan);
             if ($action === 'install') {
                 $this->installFromUrl($target, $name);
@@ -1314,31 +1312,55 @@ class PluginManager extends Base
     }
 
     /**
+     * The source a plugin's dependencies must come from: its binding when
+     * bound (only its source counts), else its private catalog entry's
+     * source, else null (public).
+     */
+    private function dependencySource(string $name, array $doc): ?string
+    {
+        $key = PluginName::key($name);
+        return ($key === null ? null : ($doc['bindings'][$key] ?? null))
+            ?? self::privateSourceOf($this->catalog[$name] ?? null);
+    }
+
+    /**
      * A plan from the caller may not install a dependency a private plugin
      * must not get from another source: with a private dependant, every
-     * install/update step comes from its source; and every private step's
-     * own requirements planned here come from that step's source.
+     * install/update step comes from its source; and the requirements of
+     * every private step (installed or enabled, by its binding) planned here
+     * come from that step's source.
      *
      * @throws ModMenuException (plan changed)
      */
-    private function assertPlanSources(array $plan, ?string $dependantSource): void
+    private function assertPlanSources(array $plan, ?string $dependantSource, array $doc): void
     {
-        $sources = [];
+        $installed = [];
+        $requires = [];
+        $deps = null;
         foreach ($plan as $step) {
-            if (in_array($step['action'] ?? '', ['install', 'update'], true)) {
-                $sources[(string) $step['plugin']] = self::privateSourceOf($this->catalog[$step['plugin']] ?? null);
+            $plugin = (string) ($step['plugin'] ?? '');
+            $action = $step['action'] ?? '';
+            if (in_array($action, ['install', 'update'], true)) {
+                $installed[$plugin] = self::privateSourceOf($this->catalog[$plugin] ?? null);
+                $requires[$plugin] = self::normalizeDeps($this->catalog[$plugin]['requires'] ?? []);
+            } elseif ($action === 'enable') {
+                $deps ??= $this->installedPluginsDeps();
+                $requires[$plugin] = $deps[$plugin]['requires'] ?? [];
             }
         }
         $refuse = static fn () => new ModMenuException(t(self::MIGRATION_PLAN_CHANGED_MESSAGE), self::MIGRATION_PLAN_CHANGED);
-        foreach ($sources as $plugin => $source) {
+        foreach ($installed as $source) {
             if ($dependantSource !== null && $source !== $dependantSource) {
                 throw $refuse();
             }
+        }
+        foreach ($requires as $plugin => $list) {
+            $source = $this->dependencySource($plugin, $doc);
             if ($source === null) {
                 continue;
             }
-            foreach (self::normalizeDeps($this->catalog[$plugin]['requires'] ?? []) as $dep) {
-                if (array_key_exists($dep['plugin'], $sources) && $sources[$dep['plugin']] !== $source) {
+            foreach ($list as $dep) {
+                if (array_key_exists($dep['plugin'], $installed) && $installed[$dep['plugin']] !== $source) {
                     throw $refuse();
                 }
             }
