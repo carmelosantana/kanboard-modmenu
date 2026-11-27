@@ -156,7 +156,7 @@ class CatalogLockTest extends Base
                 }
                 $lock = new CatalogLock($this->dir);
                 $lock->shared(fn () => touch($childShared));
-                $lock->exclusive(fn () => file_put_contents($childExclusive, (string) microtime(true)));
+                $lock->exclusive(fn () => file_put_contents($childExclusive, (string) hrtime(true)));
                 $ok = true;
             } catch (\Throwable $e) {
                 $ok = false;
@@ -175,7 +175,7 @@ class CatalogLockTest extends Base
                 $this->assertFileExists($childShared, 'a second shared holder got in');
                 usleep(300000);
                 $this->assertFileDoesNotExist($childExclusive, 'exclusive waited for the shared holder');
-                return microtime(true);
+                return hrtime(true);
             });
         } finally {
             // Always reap the child, even when an assertion above failed.
@@ -184,6 +184,6 @@ class CatalogLockTest extends Base
         }
 
         $this->assertTrue(pcntl_wifexited($status) && pcntl_wexitstatus($status) === 0, 'child locked successfully');
-        $this->assertGreaterThanOrEqual($released, (float) file_get_contents($childExclusive));
+        $this->assertGreaterThanOrEqual($released, (int) file_get_contents($childExclusive), 'exclusive ran after the shared holder released (monotonic ns)');
     }
 }
