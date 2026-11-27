@@ -4,6 +4,7 @@
 .modmenu-tabs li a.active { font-weight: 600; border-bottom: 2px solid var(--primary, #4a6fa5); }
 .modmenu-sources { list-style: none; margin: 0 0 1rem; padding: 0; }
 .modmenu-card { border: 1px solid var(--border, #ddd); border-radius: var(--radius, 4px); padding: 0.75rem 1rem; margin-bottom: 0.75rem; }
+.modmenu-sources .modmenu-card ul { list-style: disc outside; margin: 0.25rem 0 0.5rem; padding-left: 1.5rem; }
 .modmenu-card__status { font-size: 0.8125rem; opacity: 0.85; }
 .modmenu-badge { display: inline-block; padding: 0.1rem 0.4rem; border-radius: 999px; font-size: 0.75rem; }
 .modmenu-badge--update { background: var(--primary, #4a6fa5); color: var(--primary-foreground, #fff); }
