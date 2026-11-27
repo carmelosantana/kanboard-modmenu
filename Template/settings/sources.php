@@ -12,22 +12,26 @@
         <li class="modmenu-card">
             <code><?= $this->text->e($src) ?></code>
             <?php if ($src === $default_source): ?> <em>(<?= t('default') ?>)</em><?php endif ?>
+            <?php if (empty($frozen)): ?>
             <form method="post" class="modmenu-action" style="display:inline"
                   action="<?= $this->url->href('ModMenuController', 'removeSource', ['plugin' => 'ModMenu']) ?>">
                 <?= $this->form->csrf() ?>
                 <input type="hidden" name="url" value="<?= $this->text->e($src) ?>">
                 <button type="submit" class="btn btn-red"><?= t('Remove') ?></button>
             </form>
+            <?php endif ?>
         </li>
     <?php endforeach ?>
 </ul>
 
+<?php if (empty($frozen)): ?>
 <form method="post" class="modmenu-action" action="<?= $this->url->href('ModMenuController', 'addSource', ['plugin' => 'ModMenu']) ?>">
     <?= $this->form->csrf() ?>
     <?= $this->form->label(t('Directory URL (plugins.json)'), 'url') ?>
     <?= $this->form->text('url', [], [], ['placeholder' => 'https://example.com/plugins.json']) ?>
     <button type="submit" class="btn btn-blue"><?= t('Add source') ?></button>
 </form>
+<?php endif ?>
 
 <h3><?= t('Private sources') ?></h3>
 <p><?= t('A private source is a plugins.json in a private GitHub repository. ModMenu reads its GitHub token from Vault for each request; the token is never stored by ModMenu. Any plugin running on this server could ask Vault for the same token, so use a read-only fine-grained token limited to the directory and plugin repositories.') ?></p>

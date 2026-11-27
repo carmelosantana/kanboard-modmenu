@@ -73,7 +73,7 @@ final class SecureFile
             umask($umask);
 
             if ($handle !== false) {
-                chmod($path, 0600);
+                @chmod($path, 0600);
                 return $handle;
             }
         }

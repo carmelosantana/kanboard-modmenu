@@ -239,6 +239,53 @@ class PrivateSourcesFlowTest extends Base
         $this->assertStringNotContainsString(self::REF, $this->bodies[0]);
     }
 
+    public function testAddPrivateSourceRefusesADuplicateWithoutAskingVault(): void
+    {
+        $this->privatePlugin('Secret', '1.0.0');
+        $this->addPrivate();
+        $reads = $this->vault->reads;
+        $requests = count($this->requests);
+
+        $this->call('addPrivateSource', ['url' => self::PRIVATE_URL, 'token_ref' => self::REF]);
+
+        $this->assertSame([['failure', 'Duplicate source; remove and re-add it']], $this->flashes);
+        $this->assertSame($reads, $this->vault->reads);
+        $this->assertCount($requests, $this->requests);
+    }
+
+    public function testFrozenSourcesPageHidesTheSourceForms(): void
+    {
+        $this->controller()->sources();
+        foreach (['action=addSource', 'action=removeSource', 'action=addPrivateSource'] as $form) {
+            $this->assertStringContainsString($form, $this->bodies[0]);
+        }
+
+        $this->damage();
+        $this->bodies = [];
+        $this->controller()->sources();
+
+        $this->assertStringContainsString(self::PUBLIC_URL, $this->bodies[0]);
+        foreach (['action=addSource', 'action=removeSource', 'action=addPrivateSource'] as $form) {
+            $this->assertStringNotContainsString($form, $this->bodies[0]);
+        }
+    }
+
+    public function testResetPageShowsFrozenWhenStateIsDamagedAfterTheCheck(): void
+    {
+        $this->privatePlugin('Secret', '1.0.0');
+        $this->addPrivate();
+        $controller = new PrivateSourcesFlowRacingController($this->container);
+        $controller->realManager = $this->manager;
+        $controller->afterCheck = fn () => file_put_contents($this->dir.'/private-state.json', 'not json');
+        $this->container['request'] = new Request($this->container, ['REQUEST_METHOD' => 'GET']);
+
+        $controller->resetPrivateState();
+
+        $this->assertCount(1, $this->bodies);
+        $this->assertStringContainsString('The state file is damaged, so its contents are not shown.', $this->bodies[0]);
+        $this->assertStringNotContainsString(self::PRIVATE_URL, $this->bodies[0]);
+    }
+
     public function testRemovePrivateSourceWorksWhileDown(): void
     {
         $this->privatePlugin('Secret', '1.0.0');
@@ -481,6 +528,30 @@ class PrivateSourcesFlowTest extends Base
         $this->assertFalse($this->state()->hasFile());
     }
 
+    public function testPrivateInstallNamesDependenciesToInstallYourself(): void
+    {
+        $this->publicPlugin('Helper', '1.0.0');
+        $this->privatePlugin('Secret', '1.0.0', ['requires' => [['plugin' => 'Helper']]]);
+        $this->addPrivate();
+
+        $this->call('install', ['name' => 'Secret']);
+
+        $this->assertSame([['failure', '&quot;Secret&quot; has requirements that cannot be installed automatically. Install them manually first. Needed: Helper (Install it yourself first).']], $this->flashes);
+        $this->assertDirectoryDoesNotExist($this->active.'/Secret');
+        $this->assertDirectoryDoesNotExist($this->active.'/Helper');
+    }
+
+    public function testPublicInstallNamesUnavailableDependencies(): void
+    {
+        $this->publicPlugin('Alpha', '1.0.0');
+        $this->publicPlugins[0]['requires'] = [['plugin' => 'Missing']];
+        $this->serveListings();
+
+        $this->call('install', ['name' => 'Alpha']);
+
+        $this->assertSame([['failure', '&quot;Alpha&quot; has requirements that cannot be installed automatically. Install them manually first. Needed: Missing.']], $this->flashes);
+    }
+
     // ── CSRF ──────────────────────────────────────────────────────────────
 
     public function testNewPostActionsRefuseMissingAndWrongCsrf(): void
@@ -668,11 +739,11 @@ class PrivateSourcesFlowTest extends Base
         $this->routes[self::PRIVATE_URL] = $this->listingRoute($this->privatePlugins);
     }
 
-    private function privatePlugin(string $name, string $version): void
+    private function privatePlugin(string $name, string $version, array $extra = []): void
     {
         $zip = $this->zip($name, $version);
         $download = 'https://github.com/acme/'.strtolower($name).'/releases/download/v'.$version.'/'.$name.'-'.$version.'.zip';
-        $this->privatePlugins[] = ['name' => $name, 'version' => $version, 'sha256' => hash_file('sha256', $zip), 'download' => $download];
+        $this->privatePlugins[] = ['name' => $name, 'version' => $version, 'sha256' => hash_file('sha256', $zip), 'download' => $download] + $extra;
         $this->routes[$this->tagsUrl($name, $version)] = $this->listingRoute(['tag_name' => 'v'.$version, 'assets' => [['id' => 77, 'name' => $name.'-'.$version.'.zip']]]);
         $this->routes[GithubUrl::assetUrl('acme', strtolower($name), 77)] = static function ($write) use ($zip) {
             $write(null, (string) file_get_contents($zip));

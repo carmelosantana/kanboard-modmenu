@@ -187,6 +187,18 @@ class SourceRepository extends Base
     }
 
     /**
+     * A cheap, unlocked duplicate check before a private add asks Vault and
+     * fetches; addPrivateSource() repeats it under the lock and stays the
+     * authority.
+     *
+     * @throws ModMenuException when $id is already used by a source
+     */
+    public function refuseKnownSource(string $id): void
+    {
+        $this->refuseDuplicate($id, $this->getSources(), $this->privateState()->read());
+    }
+
+    /**
      * Moves a private source to removed, dropping its seen and dismissed
      * names and keeping its bindings. Needs no fetch; unknown ids are ignored.
      */

@@ -483,7 +483,35 @@ class DirectoryClientTest extends Base
 
         $this->assertSame(['Alpha', 'Secret'], array_keys($result['plugins']));
         $this->assertTrue($result['private_ok']);
-        $this->assertSame(['Alpha', 'Secret'], array_keys($this->client->catalogMap()));
+    }
+
+    public function testPrivateEntryRequirementsResolveOnlyFromItsOwnSource(): void
+    {
+        $id = $this->addPrivate(self::PRIVATE_URL);
+        $this->publicListing([['name' => 'Helper', 'version' => '1.0.0', 'download' => 'https://x.com/Helper.zip']]);
+        $this->fetcher->responses[$id] = [
+            $this->privateEntry('Secret', ['requires' => [['plugin' => 'Helper'], ['plugin' => 'Sibling']]]),
+            $this->privateEntry('Sibling'),
+        ];
+
+        $plugins = $this->client->catalogResult()['plugins'];
+
+        $state = array_column($plugins['Secret']['requires_state'], 'action', 'plugin');
+        $this->assertSame(['Helper' => 'unresolvable', 'Sibling' => 'install'], $state);
+    }
+
+    public function testPublicEntryRequirementsStillResolveFromEverySource(): void
+    {
+        $id = $this->addPrivate(self::PRIVATE_URL);
+        $this->publicListing([
+            ['name' => 'Alpha', 'version' => '1.0.0', 'download' => 'https://x.com/Alpha.zip', 'requires' => [['plugin' => 'Helper']]],
+            ['name' => 'Helper', 'version' => '1.0.0', 'download' => 'https://x.com/Helper.zip'],
+        ]);
+        $this->fetcher->responses[$id] = [$this->privateEntry('Secret')];
+
+        $plugins = $this->client->catalogResult()['plugins'];
+
+        $this->assertSame('install', $plugins['Alpha']['requires_state'][0]['action']);
     }
 
     public function testBrowseShowsPrivateTagWithoutSourceDetails(): void

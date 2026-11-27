@@ -267,6 +267,7 @@ class ModMenuController extends BaseController
             if ((new PrivateState($this->container))->isDamaged()) {
                 throw new PrivateStateDamaged();
             }
+            $repository->refuseKnownSource($source['id']);
             try {
                 $plugins = $this->privateFetcher()->fetchDirectory(['id' => $source['id'], 'url' => $source['endpoint'], 'token_ref' => $ref]);
             } catch (ModMenuException $e) {
@@ -344,11 +345,18 @@ class ModMenuController extends BaseController
     public function resetPrivateState()
     {
         $this->requireAdmin();
-        $state = new PrivateState($this->container);
+        $state = $this->privateState();
 
         if (! $this->request->isPost()) {
             // A damaged file is never read into the page: the reset drops whatever it holds.
-            $doc = $state->isDamaged() ? null : $state->read();
+            $doc = null;
+            if (! $state->isDamaged()) {
+                try {
+                    // The state can be damaged between the check and this read.
+                    $doc = $state->read();
+                } catch (PrivateStateDamaged $e) {
+                }
+            }
             $installed = $doc === null ? [] : $this->manager()->installedKeys();
             $this->response->html($this->helper->layout->config('ModMenu:settings/reset', [
                 'title' => t('ModMenu'),
@@ -660,7 +668,7 @@ class ModMenuController extends BaseController
         // submit (TOCTOU): if a requirement is no longer auto-resolvable, refuse
         // rather than run a plan that resolveAndActivate would abort on anyway.
         if ($check['blocked']) {
-            $this->flash->failure(t('"%s" has requirements that can no longer be installed automatically. Install them manually first.', $name));
+            $this->flash->failure(t('"%s" has requirements that can no longer be installed automatically. Install them manually first.', $name) . self::unresolvableNote($check['plan']));
             $action === 'install' ? $this->backToDirectory() : $this->backToInstalled();
             return;
         }
@@ -820,7 +828,7 @@ class ModMenuController extends BaseController
         }
 
         if ($check['blocked']) {
-            $this->flash->failure($prefix . t('"%s" has requirements that cannot be installed automatically. Install them manually first.', $name));
+            $this->flash->failure($prefix . t('"%s" has requirements that cannot be installed automatically. Install them manually first.', $name) . self::unresolvableNote($check['plan']));
             $action === 'install' ? $this->backToDirectory() : $this->backToInstalled();
             return;
         }
@@ -834,6 +842,21 @@ class ModMenuController extends BaseController
             'action' => $action,
             'plan'   => $check['plan'],
         ]));
+    }
+
+    /**
+     * " Needed: A, B (Install it yourself first)." for a plan's unresolvable
+     * steps; the reason names a dependency a private plugin's source does not list.
+     */
+    private static function unresolvableNote(array $plan): string
+    {
+        $needed = [];
+        foreach ($plan as $step) {
+            if (($step['action'] ?? null) === 'unresolvable') {
+                $needed[] = empty($step['reason']) ? $step['plugin'] : $step['plugin'] . ' (' . t($step['reason']) . ')';
+            }
+        }
+        return $needed === [] ? '' : ' ' . t('Needed: %s.', implode(', ', $needed));
     }
 
     /**

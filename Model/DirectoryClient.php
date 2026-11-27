@@ -143,12 +143,14 @@ class DirectoryClient extends Base
         return $plugins;
     }
 
+    /** A private entry's requirements resolve only from its own source (DependencyResolver::catalogFor()). */
     private function annotateRequirements(array $plugins, array $installedMap): array
     {
         $resolver = new DependencyResolver($this->container);
         $catalog = self::indexByName($plugins);
         foreach ($plugins as &$plugin) {
-            $plugin['requires_state'] = $resolver->resolveForward($plugin['requires'], 'requires', $installedMap, $catalog)['deps'];
+            $sourceId = empty($plugin['private']) ? null : (string) ($plugin['source_id'] ?? '');
+            $plugin['requires_state'] = $resolver->resolveForward($plugin['requires'], 'requires', $installedMap, $catalog, $sourceId)['deps'];
         }
         return $plugins;
     }
@@ -446,17 +448,6 @@ class DirectoryClient extends Base
     protected function privateState(): PrivateState
     {
         return new PrivateState($this->container);
-    }
-
-    /**
-     * Merged directory catalog indexed by plugin name, for the dependency
-     * resolver/controller. Network wrapper over fetchAll(); returns [] rather
-     * than throwing when sources are unreachable (callers degrade gracefully:
-     * fewer deps are auto-resolvable, nothing crashes).
-     */
-    public function catalogMap(): array
-    {
-        return self::indexByName($this->fetchAll()['plugins']);
     }
 
     /** Index merged directory entries by plugin name, skipping nameless ones. */
