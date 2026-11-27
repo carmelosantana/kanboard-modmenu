@@ -5,6 +5,32 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## 1.7.0 — Unreleased
+
+### Added
+
+- **Private sources.** Add a `plugins.json` from a private GitHub repository with a Vault reference to a GitHub token (`vault://<entry>/token`, shared with Server for consumer `ModMenu`). Its plugins show a **Private** tag and install, update and resolve dependencies like public ones. The token is read from Vault for each request and is never stored, logged or shown by ModMenu. Private entries need a `sha256` and a `github.com` release-asset download in the directory's owner.
+- **Adopt, Dismiss and Unbind.** Installed plugins a private source lists are bound to it only when you click **Adopt**; **Dismiss** keeps one updating from public sources, and **Unbind** releases a bound plugin. A bound plugin updates only from its source.
+- **Reset private state.** If the private-state file is missing or damaged, ModMenu stops changing plugins until you reset it from the Sources tab.
+
+### Changed
+
+- While any private source is unreachable, nothing installs or updates, public plugins included. Removing a source, Unbind, uninstall and Reset still work.
+- With a private source configured, a plugin name listed by more than one source is removed from Browse and reported, instead of first source wins.
+- Plugin names are compared case-insensitively. Directory entries whose names are not letters, digits and `_` (at most 64) are left out and reported as source errors, public sources included, and duplicates are found regardless of case.
+- Installed plugin folders whose names are not letters, digits and `_` can no longer be changed through ModMenu (Kanboard cannot load them either); remove them by hand.
+- Source URLs are stored in a normal form (lowercase scheme and host, no `:443`), so two spellings of one URL are one source; URLs with userinfo or a fragment are refused.
+- Downloads for migrations and dependency installs now run while source edits wait, so adding or removing a source can pause until a running download finishes.
+
+### Security and reliability
+
+- Installing a plugin over an installed folder whose name differs only in case is refused.
+- When two installed folders share a name apart from case, neither is offered updates until one is removed.
+- Download redirects whose URL carries a `#fragment` are refused.
+- Plugin lock files are named after the lowercased plugin name, so `Foo` and `foo` share one lock. During the upgrade, an operation already running under 1.6.0 on a mixed-case plugin does not block a new one.
+
+---
+
 ## 1.6.0 — 2026-11-25
 
 ### Added

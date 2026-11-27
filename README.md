@@ -18,7 +18,7 @@ ModMenu adds a **Settings → ModMenu** page with four tabs:
 | **Installed** | Lists every plugin currently in `plugins/` (active) or `data/modmenu_disabled/` (disabled), with enable, disable, and remove actions. |
 | **Browse** | Fetches plugin listings from the configured directory sources and shows install/update buttons for each entry, linked screenshot thumbnails, and an **Update all (N)** button when installed plugins have updates. A toolbar filters by search and category and sorts the list. |
 | **Upload** | WordPress-style zip upload — drop a `.zip` archive to install a plugin directly. |
-| **Sources** | Manage the directory source URLs that Browse fetches from. Ships with one bundled default source. |
+| **Sources** | Manage the directory source URLs that Browse fetches from, including [private sources](#private-sources). Ships with one bundled default source. |
 
 ---
 
@@ -225,6 +225,7 @@ From 1.3.0 on, ModMenu updates itself from Browse and the companion is no longer
 | **Zip validation (entry count)** | Archives with more than 5 000 entries are rejected. |
 | **Zip validation (structure)** | Archive must contain exactly one top-level directory, and that directory must contain a `Plugin.php`. Any other structure is rejected. |
 | **Path-traversal protection** | Every zip entry name is checked: entries starting with `/`, containing `..`, or containing `\` are rejected. |
+| **Private-source tokens** | The GitHub token lives only in Vault. ModMenu reads it for each request, sends it only to `raw.githubusercontent.com` and `api.github.com` on the first hop, and never stores, logs or shows it. See [Private sources](#private-sources). |
 | **Self-protection** | ModMenu cannot disable or uninstall itself. It updates itself only to a newer version, through the staged swap described under [Self-update](#self-update). |
 
 ---
@@ -243,13 +244,19 @@ returns a JSON array of plugin objects.
 3. Switch to the **Browse** tab. ModMenu merges results from `https://` sources
    (first source wins for duplicate plugin names). Re-add any saved `http://` sources over HTTPS.
 
+ModMenu stores a source URL in a normal form: lowercase scheme and host, no `:443`.
+Two spellings of one URL count as the same source, and a URL with userinfo or a
+`#fragment` is refused. Once a [private source](#private-sources) is configured, a plugin
+name listed by more than one source is no longer first-wins: it is removed from Browse and
+shown as a source error naming the plugin.
+
 ### `plugins.json` field reference
 
 Each entry in the JSON array is an object. All fields are optional except `name`.
 
 | Field | Type | Description |
 |---|---|---|
-| `name` | string | **Required.** Must match the plugin folder name exactly (case-sensitive). Used as the unique identifier for status checks. |
+| `name` | string | **Required.** Must match the plugin folder name exactly (case-sensitive) and use only letters, digits and `_` (at most 64). ModMenu compares names case-insensitively, so `Foo` and `foo` are the same plugin. An entry with any other name is left out and reported as a source error. |
 | `title` | string | Human-readable display name shown in the Browse tab. Falls back to `name` if absent. |
 | `category` | string | Browse category (e.g. `"Reporting"`). Any string is shown; a missing or empty one files the entry under `Other`. |
 | `added` | string | `YYYY-MM-DD` the entry first appeared in the directory. Drives the **First submitted** sort. Ignored unless it is `YYYY-MM-DD`. |
@@ -260,7 +267,7 @@ Each entry in the JSON array is an object. All fields are optional except `name`
 | `kanboard_version` (or `compatible_version`) | string | Minimum Kanboard version (e.g. `">=1.2.47"`). Checked against the plugin's own `plugin.json` on install and update: an incompatible plugin is refused. |
 | `homepage` | string | URL to the plugin's home page or repository. |
 | `download` | string | URL to the `.zip` archive. ModMenu downloads this URL when the admin clicks Install or Update. |
-| `sha256` | string | Optional 64-digit hexadecimal SHA-256 of the `download` archive. If present, the archive must match it before installation. |
+| `sha256` | string | 64-digit hexadecimal SHA-256 of the `download` archive. If present, the archive must match it before installation. Optional in public directories, required in a private one. |
 | `screenshots` | array | List of screenshot URLs (or paths relative to the `plugins.json` URL). Displayed as thumbnails in the Browse tab. |
 | `requires` | array | Hard dependencies — dep objects `{ "plugin": "Name", "min_version": "1.1.0" }`. ModMenu blocks activation until each is installed, active, and ≥ `min_version`, offering a one-click resolve. Reverse-protected: a required plugin can't be disabled/removed while an active dependent needs it. |
 | `recommends` | array | Soft dependencies — same dep-object shape plus an optional `"reason"`. Non-blocking: ModMenu shows a "works better with" hint and a one-click install, but activation proceeds without them. |
@@ -303,6 +310,110 @@ Example:
   }
 ]
 ```
+
+---
+
+## Private sources
+
+A private source is a `plugins.json` in a private GitHub repository. Its plugins show
+up in Browse with a **Private** tag and install, update and resolve dependencies like any
+other plugin. ModMenu reads the GitHub token from the [Vault](https://github.com/carmelosantana/kanboard-vault)
+plugin for each request that needs it. The token is never stored in Kanboard's settings,
+and ModMenu never logs it, shows it or puts it in an error message.
+
+With no private source configured, ModMenu works exactly as before.
+
+### Setting one up
+
+1. **Create the private directory.** Make a private GitHub repository holding a
+   `plugins.json` in the [usual format](#pluginsjson-field-reference), with two extra rules
+   for its entries:
+   - `sha256` is required.
+   - `download` must be a release asset on `github.com` in the same owner as the
+     directory repository:
+     `https://github.com/<owner>/<repo>/releases/download/<tag>/<asset>.zip`.
+2. **Create a token.** On GitHub, make a fine-grained personal access token with
+   **Contents: read** only, on the directory repository and the private plugin
+   repositories, and nothing else.
+3. **Store it in Vault.** Add a Vault entry with a custom field named `token` holding the
+   token. Open the entry's sharing dialog and share it with **Server**: consumer `ModMenu`,
+   field `token`, and a rate that covers your heaviest operation (see [Vault reads](#vault-reads)).
+   Server sharing must be turned on in Vault.
+4. **Add the source.** Go to **Settings → ModMenu → Sources**. Under **Private sources**,
+   fill in **Private directory URL (raw.githubusercontent.com)** with the raw URL of the
+   file, for example
+   `https://raw.githubusercontent.com/<owner>/<repo>/main/plugins.json`, and **Vault
+   reference to the GitHub token** with `vault://<entry id>/token`. Click **Add private
+   source**. ModMenu fetches the directory once before saving it; if that fetch fails,
+   nothing is added and the message says why.
+5. **Adopt hand-installed plugins.** If a plugin the source lists is already installed (for
+   example one you installed from a zip), it appears under the source with an **Adopt**
+   button. Adopt binds it to the source so it updates from there; **Dismiss** keeps it
+   updating from public sources. Until you choose, ModMenu does not update it.
+
+Each private source row shows its token reference and what Vault says about it: **shared
+with Server**, **not shared with Server** or **Vault off**. Vault cannot tell ModMenu in
+advance whether `ModMenu` is an allowed consumer, so a wrong consumer only shows up as an
+error on the next Browse.
+
+### Adoption is explicit
+
+ModMenu never binds a plugin to a private source by itself. A bound plugin installs and
+updates only from its source, and a public entry with the same name is ignored for it. If
+the source is removed or cannot be reached, the plugin shows **Private source unavailable**
+and is not updated. **Unbind** (under the source's **Bound plugins**) lets it update from
+public sources again. Removing a private source keeps its bindings, so you can add it back
+without adopting again.
+
+A private plugin's `requires` install only from the same private source. A requirement
+that would come from anywhere else shows **Install it yourself first**; an
+already-installed plugin, public or private, satisfies it.
+
+### When a private source is down
+
+While any private source cannot be reached, ModMenu installs and updates nothing, public
+plugins included, and Browse says so. Browse still lists public plugins. ModMenu cannot
+check a down directory for a plugin name that collides with a public one, so it waits
+rather than guess.
+
+Remove source, Unbind, uninstall and **Reset private state** still work while a source is
+down, so a revoked token or a deleted repository never locks you in.
+
+### Vault reads
+
+ModMenu asks Vault for the token once per operation on one source: once per directory
+fetch, and once per private plugin download. Vault limits reads per hour and per burst on
+the Server share, so set them to cover your heaviest operation. Browse and every install
+or update fetch each private source once; **Update all** then reads once more for each
+private plugin it updates. For example, with one private source and five private plugins,
+a full Update all needs about six reads at once; set the burst at least that high and the
+hourly rate with room for Browse page loads. A refused read shows Vault's reason, for example
+"ModMenu reached the token's Vault rate limit. Try again later".
+
+### Trust limit
+
+Vault's consumer name is a label, not a password. Any plugin running in the same
+Kanboard can ask Vault for the `ModMenu` token, so only install plugins you trust, and keep
+the token read-only and scoped to the private directory repository and the private plugin
+repositories. If you suspect it leaked, revoke it on GitHub and make a new one.
+
+### What the checksum proves
+
+A private entry's `sha256` catches a corrupted or swapped download. It is not a
+signature: anyone who can edit the private directory can change both the download URL and
+the checksum, so the directory repository and the token's scope are what you are
+trusting. Treat release tags as fixed; if you re-upload an asset under the same tag, its
+checksum no longer matches until you update the directory.
+
+### Damaged state
+
+ModMenu keeps private sources, bindings and dismissals in
+`data/modmenu/private-state.json` (no secrets). If that file is missing or damaged,
+ModMenu stops changing plugins, Browse shows public sources only, and the Sources tab
+offers **Reset private state**. Reset sets the old file aside, drops every private
+source, binding and dismissal, and leaves installed plugins as they are; add your private
+sources again afterwards. If the `data/modmenu` folder itself has the wrong owner or
+permissions, fix it by hand (owned by the web server user, folder `0700`, files `0600`).
 
 ---
 
