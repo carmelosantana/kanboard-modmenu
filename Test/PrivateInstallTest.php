@@ -453,32 +453,39 @@ class PrivateInstallTest extends Base
 
     // ── one identity per key on the download path (MM-IMPL-R2-01) ──────────
 
-    public function testMixedCaseDependencyUpdateUsesThePrivateFetch(): void
+    // R17: key lookup only finds the entry; the entry's own name must equal the folder byte for byte.
+
+    public function testMixedCaseDependencyUpdateIsRefusedUnderAnotherSpelling(): void
     {
         [$id, $plan, $mine] = $this->boundSecretUnderAnotherSpelling(fn (string $zip) => hash_file('sha256', $zip));
-        $seen = [];
-        $this->manager->atCommit = function (string $name) use (&$seen): void {
-            $seen[$name] = $this->bindings();
-        };
+        $downloads = count($this->fetcher->downloads);
 
-        $this->manager->resolveAndActivate('Mine', 'install', $mine, $plan);
+        $this->assertRefused('The directory lists this plugin as &quot;SECRET&quot;, not &quot;Secret&quot;. Nothing was installed.', fn () => $this->manager->resolveAndActivate('Mine', 'install', $mine, $plan));
 
-        $this->assertSame('2.0.0', $this->version('Secret'));
-        $this->assertSame('1.0.0', $this->version('Mine'));
-        $this->assertSame(['secret' => $id], $seen['Secret'], 'bound before the new Secret is activated');
-        $this->assertSame(['secret' => $id, 'mine' => $id], $seen['Mine']);
-        $this->assertContains($this->download('SECRET', '2.0.0'), array_column($this->fetcher->downloads, 1));
-    }
-
-    public function testMixedCaseDependencyUpdateEnforcesTheChecksum(): void
-    {
-        [$id, $plan, $mine] = $this->boundSecretUnderAnotherSpelling(fn () => str_repeat('a', 64));
-
-        $this->assertRefused('The downloaded archive does not match the checksum in the directory. Nothing was installed.', fn () => $this->manager->resolveAndActivate('Mine', 'install', $mine, $plan));
-
+        $this->assertCount($downloads, $this->fetcher->downloads, 'refused before any download');
         $this->assertSame('1.0.0', $this->version('Secret'));
         $this->assertNull($this->version('Mine'));
         $this->assertSame(['secret' => $id], $this->bindings());
+    }
+
+    public function testCatalogEntryUnderAnotherSpellingIsNeverInstalled(): void
+    {
+        $id = $this->privateSource([]);
+        $zip = $this->zip('Secret', '1.0.0');
+        $this->fetcher->releases[$this->download('SECRET', '1.0.0')] = $zip;
+        $this->fetcher->listings[$id] = [[
+            'name' => 'SECRET', 'version' => '1.0.0', 'sha256' => hash_file('sha256', $zip), 'download' => $this->download('SECRET', '1.0.0'),
+            'requires' => [['plugin' => 'Helper']], 'conflicts' => ['Rival'],
+        ]];
+        $result = $this->fetch();
+        $this->manager->setCatalog($result['plugins'], new MutationGuard($this->container, $result));
+
+        $this->assertRefused('The directory lists this plugin as &quot;SECRET&quot;, not &quot;Secret&quot;. Nothing was installed.', fn () => $this->manager->installFromUrl($this->download('SECRET', '1.0.0'), 'Secret'));
+        $this->assertSame([], $this->fetcher->downloads);
+        $this->assertRefused('The archive for &quot;SECRET&quot; contains &quot;Secret&quot;. Nothing was installed.', fn () => $this->manager->installFromUrl($this->download('SECRET', '1.0.0'), 'SECRET'));
+
+        $this->assertNull($this->version('Secret'));
+        $this->assertSame([], $this->bindings());
     }
 
     public function testMixedCaseListingNeverUpdatesASeenUnboundPluginFromThePublicPath(): void
@@ -497,7 +504,8 @@ class PrivateInstallTest extends Base
         $result = $this->fetch();
         $this->manager->setCatalog($result['plugins'], new MutationGuard($this->container, $result));
 
-        $this->assertRefused('Listed by a private source: adopt or dismiss', fn () => $this->manager->installFromUrl($this->download('RpcGuard', '2.0.0'), 'RPCGUARD'));
+        // R17 refuses the case variant first; with the same spelling the seen-unbound gate refuses.
+        $this->assertRefused('The directory lists this plugin as &quot;RpcGuard&quot;, not &quot;RPCGUARD&quot;. Nothing was installed.', fn () => $this->manager->installFromUrl($this->download('RpcGuard', '2.0.0'), 'RPCGUARD'));
 
         $this->assertSame(0, $public);
         $this->assertSame([], $this->fetcher->downloads);

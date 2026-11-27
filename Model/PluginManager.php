@@ -25,6 +25,7 @@ class PluginManager extends Base
     const MIGRATION_SELF_UPDATE_MESSAGE = "A migration can't update ModMenu itself. Update ModMenu first, then migrate.";
     const PRIVATE_UNAVAILABLE = 'Private source unavailable';
     const ADOPT_OR_DISMISS = 'Listed by a private source: adopt or dismiss';
+    const LISTED_AS = 'The directory lists this plugin as "%s", not "%s". Nothing was installed.';
     const INSTALLED_DUPLICATE = 'Two installed folders share the name %s; remove one first';
     const NOT_LISTED = '%s is not listed by this private source';
 
@@ -487,8 +488,12 @@ class PluginManager extends Base
     private function downloadAndInstall(string $url, ?string $expectedName, bool $installDisabled, ?array &$journal = null): string
     {
         $this->guard()->assertCanStart();
-        // By key: a plan step may name the installed folder's spelling of a catalog entry.
+        // Found by key, then (R17) the entry's own name must equal $expectedName
+        // byte for byte: a case variant is never installed in either direction.
         $entry = $expectedName === null ? null : $this->catalogEntry($expectedName);
+        if ($entry !== null && ($listed = $this->listedName($expectedName)) !== $expectedName) {
+            throw new ModMenuException(t(self::LISTED_AS, $listed, $expectedName));
+        }
         $private = self::privateSourceOf($entry) !== null;
         $sha256 = null;
         if ($entry !== null && (array_key_exists('sha256', $entry) || $private)) {
@@ -1150,6 +1155,13 @@ class PluginManager extends Base
                     continue;
                 }
                 $to = (string) ($entry['version'] ?? '');
+                $listed = $this->listedName((string) $p['name']);
+                if ($listed !== $p['name']) {
+                    if (self::hasUpdate((string) $p['version'], $to)) {
+                        $blocked[$p['name']] = t(self::LISTED_AS, $listed, $p['name']);
+                    }
+                    continue;
+                }
                 $problem = $this->sourceProblem($p['name'], $entry, $doc, $installedKeys);
                 if ($problem !== null && ($bound || self::hasUpdate((string) $p['version'], $to))) {
                     $blocked[$p['name']] = $problem;
@@ -1337,6 +1349,17 @@ class PluginManager extends Base
     private function catalogEntry(string $name): ?array
     {
         return self::entryIn($this->catalog, $name);
+    }
+
+    /** The catalog's own spelling of $name: the entry's `name`, else its key. */
+    private function listedName(string $name): ?string
+    {
+        $found = PluginName::find($this->catalog, $name);
+        if ($found === null) {
+            return null;
+        }
+        $listed = $this->catalog[$found]['name'] ?? $found;
+        return is_string($listed) ? $listed : $found;
     }
 
     /** The entry of $catalog that is the same plugin as $name (PluginName::key), or null. */

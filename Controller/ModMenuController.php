@@ -414,7 +414,7 @@ class ModMenuController extends BaseController
         $blockedReason = null;
         if ($check['self_update']) {
             $blockedReason = e(PluginManager::MIGRATION_SELF_UPDATE_MESSAGE);
-        } elseif ($check['install'] && empty($catalog[$successor]['download'])) {
+        } elseif ($check['install'] && empty(self::catalogEntry($catalog, $successor)['download'])) {
             $blockedReason = t('%s is not in the plugin directory, so nothing changed.', $successor);
         } elseif ($check['blocked']) {
             $blockedReason = t('"%s" has requirements that cannot be installed automatically. Install them manually first.', $successor);
@@ -533,7 +533,7 @@ class ModMenuController extends BaseController
             return;
         }
         [$catalog, $guard] = $guarded;
-        $entry = $catalog[$name] ?? [];
+        $entry = self::catalogEntry($catalog, $name);
         if ($this->promptOnConflict($name, 'install', $entry['conflicts'] ?? [], $entry['replaces'] ?? [])) {
             return;
         }
@@ -560,8 +560,9 @@ class ModMenuController extends BaseController
             $catalog = $result['plugins'];
             $guard = new MutationGuard($this->container, $result);
         }
-        $declared = $catalog[$name]['conflicts'] ?? [];
-        $replaces = $catalog[$name]['replaces'] ?? [];
+        $entry    = self::catalogEntry($catalog, $name);
+        $declared = $entry['conflicts'] ?? [];
+        $replaces = $entry['replaces'] ?? [];
 
         if ($this->postValue('decision') !== 'confirm') {
             $conflicts = $manager->activeConflicts($name, $declared, $replaces);
@@ -653,10 +654,10 @@ class ModMenuController extends BaseController
         $manager  = $this->manager();
         $requires = $this->requiresFor($name, $action, $catalog, $manager);
         $check    = $manager->forwardCheck($requires, $catalog, null, $this->dependencySource($name, $action, $catalog));
-        $target   = $action === 'install' ? (string) ($catalog[$name]['download'] ?? '') : '';
+        $entry    = $action === 'install' ? self::catalogEntry($catalog, $name) : [];
+        $target   = (string) ($entry['download'] ?? '');
 
         // The conflict prompt must not be bypassable by posting here directly.
-        $entry = $action === 'install' ? ($catalog[$name] ?? []) : [];
         $conflicts = $manager->activeConflicts($name, $entry['conflicts'] ?? [], $entry['replaces'] ?? []);
         if ($conflicts !== []) {
             $this->flash->failure(t('%s conflicts with %s. Disable them first.', $name, implode(', ', $conflicts)));
@@ -694,7 +695,7 @@ class ModMenuController extends BaseController
             return;
         }
         [$catalog, $guard] = $guarded;
-        $url = (string) ($catalog[$expected]['download'] ?? '');
+        $url = (string) (self::catalogEntry($catalog, $expected)['download'] ?? '');
         if ($expected === '' || $url === '') {
             $this->flash->failure(t('This plugin is not in the directory.'));
             $this->backToDirectory();
@@ -771,7 +772,7 @@ class ModMenuController extends BaseController
     private function dependencySource(string $name, string $action, array $catalog): ?string
     {
         if ($action === 'install') {
-            $entry = $catalog[$name] ?? [];
+            $entry = self::catalogEntry($catalog, $name);
             return ! empty($entry['private']) && is_string($entry['source_id'] ?? null) ? $entry['source_id'] : null;
         }
         $key = PluginName::key($name);
@@ -791,10 +792,22 @@ class ModMenuController extends BaseController
         return $this->container['modMenuPrivateFetcher'] ?? new PrivateFetcher($this->container);
     }
 
+    /**
+     * The catalog entry that is the same plugin as $name (PluginName::key),
+     * or []. Lookups only find the entry; the manager refuses an install
+     * whose name is not the entry's own name byte for byte (R17).
+     */
+    private static function catalogEntry(array $catalog, string $name): array
+    {
+        $found = PluginName::find($catalog, $name);
+        $entry = $found === null ? null : $catalog[$found];
+        return is_array($entry) ? $entry : [];
+    }
+
     private function requiresFor(string $name, string $action, array $catalog, PluginManager $manager): array
     {
         if ($action === 'install') {
-            return $catalog[$name]['requires'] ?? [];
+            return self::catalogEntry($catalog, $name)['requires'] ?? [];
         }
         $deps = $manager->installedPluginsDeps();
         return $deps[$name]['requires'] ?? [];
@@ -813,7 +826,7 @@ class ModMenuController extends BaseController
 
         // Resolve the target's own download URL when installing without one.
         if ($action === 'install' && $target === '') {
-            $target = (string) ($catalog[$name]['download'] ?? '');
+            $target = (string) (self::catalogEntry($catalog, $name)['download'] ?? '');
         }
 
         $check = $manager->forwardCheck($requires, $catalog, null, $this->dependencySource($name, $action, $catalog));

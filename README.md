@@ -256,7 +256,7 @@ Each entry in the JSON array is an object. All fields are optional except `name`
 
 | Field | Type | Description |
 |---|---|---|
-| `name` | string | **Required.** Must match the plugin folder name exactly (case-sensitive) and use only letters, digits and `_` (at most 64). ModMenu compares names case-insensitively, so `Foo` and `foo` are the same plugin. An entry with any other name is left out and reported as a source error. |
+| `name` | string | **Required.** Must match the plugin folder name exactly (case-sensitive) and use only letters, digits and `_` (at most 64). ModMenu compares names case-insensitively, so `Foo` and `foo` are the same plugin, but it installs or updates an entry only when the archive's folder is byte-for-byte the entry's `name` and, for an update, the installed folder is too: an entry `FOO` never installs a `Foo` archive or updates an installed `Foo`. An entry with any other name is left out and reported as a source error. |
 | `title` | string | Human-readable display name shown in the Browse tab. Falls back to `name` if absent. |
 | `category` | string | Browse category (e.g. `"Reporting"`). Any string is shown; a missing or empty one files the entry under `Other`. |
 | `added` | string | `YYYY-MM-DD` the entry first appeared in the directory. Drives the **First submitted** sort. Ignored unless it is `YYYY-MM-DD`. |

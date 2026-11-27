@@ -1112,15 +1112,22 @@ class PluginManagerTest extends Base
         $this->assertSame(['plugin' => 'Alpha', 'from' => '1.0.0', 'to' => '1.0.1', 'download' => 'https://x/alpha.zip'], $updates[0]);
     }
 
-    public function testUpdatesFindTheCatalogEntryUnderAnotherSpelling()
+    public function testUpdateFromACatalogEntryUnderAnotherSpellingIsRefused()
     {
         $this->seedPlugin($this->active, 'Alpha', '1.0.0');
         $this->stubDownloads(['https://x/alpha.zip' => $this->makeZip('Alpha', '1.1.0')]);
         $catalog = ['ALPHA' => ['version' => '1.1.0', 'download' => 'https://x/alpha.zip']];
+        $refusal = 'The directory lists this plugin as &quot;ALPHA&quot;, not &quot;Alpha&quot;. Nothing was installed.';
 
-        $this->assertSame(['Alpha'], array_column($this->manager->updatesAvailable($catalog), 'plugin'));
-        $this->assertSame(['updated' => ['Alpha'], 'failed' => []], $this->manager->updateAll($catalog));
-        $this->assertSame(['Alpha' => '1.1.0'], array_column($this->manager->listInstalled(), 'version', 'name'));
+        $this->assertSame([], $this->manager->updatesAvailable($catalog));
+        $this->assertSame(['updated' => [], 'failed' => ['Alpha' => $refusal]], $this->manager->updateAll($catalog));
+        try {
+            $this->manager->setCatalog($catalog)->installFromUrl('https://x/alpha.zip', 'Alpha');
+            $this->fail('a case variant of the catalog name must not install');
+        } catch (ModMenuException $e) {
+            $this->assertSame($refusal, $e->getMessage());
+        }
+        $this->assertSame(['Alpha' => '1.0.0'], array_column($this->manager->listInstalled(), 'version', 'name'));
     }
 
     public function testMigrationFindsTheSuccessorUnderAnotherSpelling()

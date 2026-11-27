@@ -17,7 +17,7 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 - While any private source is unreachable, nothing installs or updates, public plugins included. Removing a source, Unbind, uninstall and Reset still work.
 - With a private source configured, a plugin name listed by more than one source is removed from Browse and reported, instead of first source wins.
-- Plugin names are compared case-insensitively. Directory entries whose names are not letters, digits and `_` (at most 64) are left out and reported as source errors, public sources included, and duplicates are found regardless of case.
+- Plugin names are compared case-insensitively. Directory entries whose names are not letters, digits and `_` (at most 64) are left out and reported as source errors, public sources included, and duplicates are found regardless of case. An entry installs or updates only a folder spelled exactly as its `name`; a case variant is refused.
 - Installed plugin folders whose names are not letters, digits and `_` can no longer be changed through ModMenu (Kanboard cannot load them either); remove them by hand.
 - Source URLs are stored in a normal form (lowercase scheme and host, no `:443`), and a new spelling of a URL already in the list is refused as a duplicate; URLs with userinfo or a fragment are refused.
 - A source list saved by an earlier version with two spellings of one URL now fails closed: both show "Duplicate source; remove and re-add it" until you remove one, with or without private sources.

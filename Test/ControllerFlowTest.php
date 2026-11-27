@@ -780,6 +780,77 @@ class ControllerFlowTest extends Base
         $this->assertStringContainsString('Harbor conflicts with ShadcnTheme', $this->bodies[0]);
     }
 
+    // R3-01: the controller finds a catalog entry by key, as the manager does.
+
+    public function testInstallUnderAnotherSpellingChecksTheEntrysConflicts()
+    {
+        $catalog = ['SECRET' => ['download' => 'https://x/s.zip', 'conflicts' => ['Rival'], 'replaces' => ['Old']]];
+        $m = $this->manager();
+        $m->expects($this->once())->method('activeConflicts')->with('Secret', ['Rival'], ['Old'])->willReturn(['Rival']);
+        $m->expects($this->never())->method('installFromUrl');
+        $this->post(['name' => 'Secret']);
+
+        $this->controller($m, $catalog)->install();
+
+        $this->assertStringContainsString('Secret conflicts with Rival', $this->bodies[0]);
+    }
+
+    public function testResolveConflictUnderAnotherSpellingUsesTheEntrysConflicts()
+    {
+        $catalog = ['SECRET' => ['download' => 'https://x/s.zip', 'conflicts' => ['Rival'], 'replaces' => ['Old']]];
+        $m = $this->manager();
+        $m->expects($this->once())->method('activeConflicts')->with('Secret', ['Rival'], ['Old'])->willReturn(['Rival']);
+        $m->expects($this->never())->method('disableConflicts');
+        $this->post(['name' => 'Secret', 'action' => 'install', 'decision' => 'cancel']);
+
+        $this->controller($m, $catalog)->resolveConflict();
+
+        $this->assertSame('Secret stays inactive until Rival is disabled.', $this->flashes['failure']);
+    }
+
+    public function testResolveUnderAnotherSpellingUsesTheEntrysRequirementsSourceAndDownload()
+    {
+        $source = str_repeat('a', 64);
+        $requires = [['plugin' => 'Helper']];
+        $catalog = ['SECRET' => ['download' => 'https://x/s.zip', 'private' => true, 'source_id' => $source, 'requires' => $requires, 'conflicts' => ['Rival']]];
+        $m = $this->manager();
+        $m->expects($this->once())->method('activeConflicts')->with('Secret', ['Rival'], [])->willReturn([]);
+        $m->expects($this->once())->method('forwardCheck')->with($requires, $catalog, null, $source)
+            ->willReturn(['satisfied' => false, 'blocked' => false, 'plan' => [['plugin' => 'Helper', 'action' => 'install', 'download' => 'https://x/h.zip']]]);
+        $m->expects($this->once())->method('resolveAndActivate')->with('Secret', 'install', 'https://x/s.zip', $this->anything());
+        $this->post(['name' => 'Secret', 'action' => 'install']);
+
+        $this->controller($m, $catalog)->resolve();
+    }
+
+    public function testInstallUnderAnotherSpellingPreflightsTheEntrysRequirements()
+    {
+        $source = str_repeat('a', 64);
+        $requires = [['plugin' => 'Helper']];
+        $catalog = ['SECRET' => ['download' => 'https://x/s.zip', 'private' => true, 'source_id' => $source, 'requires' => $requires]];
+        $m = $this->manager();
+        $m->method('activeConflicts')->willReturn([]);
+        $m->expects($this->once())->method('forwardCheck')->with($requires, $catalog, null, $source)
+            ->willReturn(['satisfied' => false, 'blocked' => true, 'plan' => [['plugin' => 'Helper', 'action' => 'unresolvable', 'download' => null, 'reason' => 'Install it yourself first']]]);
+        $m->expects($this->never())->method('installFromUrl');
+        $this->post(['name' => 'Secret']);
+
+        $this->controller($m, $catalog)->install();
+    }
+
+    public function testUpdateUnderAnotherSpellingHandsTheEntrysDownloadToTheManager()
+    {
+        $catalog = ['SECRET' => ['download' => 'https://x/s.zip']];
+        $m = $this->manager();
+        $m->expects($this->once())->method('installFromUrl')->with('https://x/s.zip', 'Secret')
+            ->willThrowException(new ModMenuException('The directory lists this plugin as &quot;SECRET&quot;, not &quot;Secret&quot;. Nothing was installed.'));
+        $this->post(['name' => 'Secret']);
+
+        $this->controller($m, $catalog)->update();
+
+        $this->assertSame('The directory lists this plugin as &quot;SECRET&quot;, not &quot;Secret&quot;. Nothing was installed.', $this->flashes['failure']);
+    }
+
     public function testResolveConflictConfirmInstallPassesCatalogConflicts()
     {
         $catalog = ['Harbor' => ['download' => 'https://x/h.zip', 'conflicts' => ['BattleLobby'], 'replaces' => ['ShadcnTheme']]];
