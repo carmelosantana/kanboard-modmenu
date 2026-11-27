@@ -69,6 +69,40 @@ class PrivateInstallSpyManager extends PluginManager
     }
 }
 
+/** A catalog lock whose exclusive hold refuses instead of blocking (same-process interleavings). */
+class PrivateInstallNonBlockingCatalogLock extends CatalogLock
+{
+    public const BUSY = 'catalog lock is held';
+
+    public function __construct(private string $lockDir)
+    {
+        parent::__construct($lockDir);
+    }
+
+    public function exclusive(callable $fn): mixed
+    {
+        $path = $this->lockDir.'/'.CatalogLock::FILE;
+        if (is_file($path)) {
+            $handle = fopen($path, 'r');
+            $free = flock($handle, LOCK_EX | LOCK_NB);
+            flock($handle, LOCK_UN);
+            fclose($handle);
+            if (! $free) {
+                throw new ModMenuException(self::BUSY);
+            }
+        }
+        return parent::exclusive($fn);
+    }
+}
+
+class PrivateInstallNonBlockingSources extends SourceRepository
+{
+    protected function catalogLock(): CatalogLock
+    {
+        return new PrivateInstallNonBlockingCatalogLock(PrivateState::defaultDir($this->container));
+    }
+}
+
 class PrivateInstallTest extends Base
 {
     private const PUBLIC_URL = 'https://catalog.example/plugins.json';
@@ -183,7 +217,30 @@ class PrivateInstallTest extends Base
         $this->manager->uninstall('Alpha');
 
         $this->assertFalse($this->state()->hasFile());
-        $this->assertFileDoesNotExist($this->dir.'/'.CatalogLock::FILE);
+        $this->assertSame('', $this->storedMarker());
+    }
+
+    public function testFirstPrivateAddAtCommitWaitsForPublicInstall(): void
+    {
+        $this->publicPlugin('Alpha', '1.0.0');
+        $result = $this->fetch();
+        $this->manager->setCatalog($result['plugins'], new MutationGuard($this->container, $result));
+        $added = null;
+        $this->manager->atCommit = function () use (&$added): void {
+            try {
+                (new PrivateInstallNonBlockingSources($this->container))->addPrivateSource(self::PRIVATE_URL, self::REF, ['alpha']);
+                $added = 'added';
+            } catch (ModMenuException $e) {
+                $added = $e->getMessage();
+            }
+        };
+
+        $this->manager->installFromUrl($this->publicDownload('Alpha', '1.0.0'), 'Alpha');
+
+        $this->assertSame(PrivateInstallNonBlockingCatalogLock::BUSY, $added);
+        $this->assertSame('1.0.0', $this->version('Alpha'));
+        $this->assertFalse($this->state()->hasFile());
+        $this->assertSame('', $this->storedMarker());
     }
 
     // ── freshness ──────────────────────────────────────────────────────────
@@ -982,6 +1039,12 @@ class PrivateInstallTest extends Base
             }
         }
         return null;
+    }
+
+    /** The marker as stored in the settings table (no request cache). */
+    private function storedMarker(): string
+    {
+        return (string) $this->container['configModel']->getOption(PrivateState::MARKER, '');
     }
 
     private function bindings(): array

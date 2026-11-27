@@ -16,8 +16,9 @@ use Pimple\Container;
  * the catalog lock shared, re-reads the private state and refuses when its
  * (epoch, generation) differs from the fetch's snapshot.
  *
- * With no private state at fetch time and no state file at check time it
- * takes no lock and writes nothing (1.6.0 behaviour).
+ * The shared lock is held even with no private state, so a first private
+ * source cannot be added between the final check and activation; it creates
+ * DATA_DIR/modmenu/catalog.lock (R10) but never the state file or marker.
  */
 class MutationGuard extends Base
 {
@@ -118,7 +119,7 @@ class MutationGuard extends Base
         $this->assertCanStart();
         $state = $this->state();
 
-        if ($this->holding || $this->isPassThrough($state)) {
+        if ($this->holding) {
             return $fn($this->checkedDoc($state));
         }
 
@@ -130,15 +131,6 @@ class MutationGuard extends Base
                 $this->holding = false;
             }
         });
-    }
-
-    /** No private state when fetched and still no state file: no lock is taken. */
-    private function isPassThrough(PrivateState $state): bool
-    {
-        return ! $this->hadFile
-            && $this->epoch === self::NO_FILE_EPOCH
-            && $this->generation === 0
-            && ! $state->hasFile();
     }
 
     private function checkedDoc(PrivateState $state): array
