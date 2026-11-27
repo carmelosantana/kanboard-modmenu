@@ -33,8 +33,8 @@ class PluginManager extends Base
 
     private array $catalog = [];
 
-    /** @var array<string, resource>|null Locks owned by an in-progress migration. */
-    private ?array $migrationLocks = null;
+    /** @var array<string, resource> Plugin locks held by withPluginLocks, keyed by PluginName::key(). */
+    private array $heldLocks = [];
 
     private function activeDir(): string
     {
@@ -210,38 +210,33 @@ class PluginManager extends Base
         }
     }
 
+    /**
+     * Lock the old plugin, its successor and every plugin in the dependency
+     * plan up front, then re-check: a plan that now needs another plugin is
+     * refused rather than extended.
+     */
     public function migrate(string $old, array $catalog, bool $dependenciesConfirmed = false, ?string $confirmedDigest = null): string
     {
-        $this->migrationLocks = [];
-        try {
-            $this->acquirePluginLock($old);
-            $successor = $this->migrationSuccessor($old);
-            $this->guardSelf($old);
-            $this->acquirePluginLock($successor);
-            $this->runMigration($old, $successor, $catalog, $dependenciesConfirmed, $confirmedDigest);
-            return $successor;
-        } finally {
-            foreach ($this->migrationLocks as $lock) {
-                fclose($lock);
-            }
-            $this->migrationLocks = null;
-        }
-    }
+        $this->guardName($old);
+        $successor = $this->migrationSuccessor($old);
+        $this->guardSelf($old);
+        $plan = $this->migrationCheck($old, $successor, $catalog)['plan'];
+        $names = array_merge([$old, $successor], self::planPlugins($plan));
 
-    private function runMigration(string $old, string $successor, array $catalog, bool $dependenciesConfirmed, ?string $confirmedDigest): void
-    {
-        $check = $this->migrationCheck($old, $successor, $catalog);
-        if ($confirmedDigest !== null) {
-            if (hash_equals($check['plan_digest'], $confirmedDigest) && $check['plan'] !== []) {
-                foreach ($check['plan'] as $step) {
-                    $this->acquirePluginLock($step['plugin']);
-                }
-                // A dependency could have changed before its lock was acquired.
-                $check = $this->migrationCheck($old, $successor, $catalog);
-            }
-            if (! hash_equals($check['plan_digest'], $confirmedDigest)) {
+        return $this->withPluginLocks($names, function () use ($old, $successor, $catalog, $dependenciesConfirmed, $confirmedDigest): string {
+            $check = $this->migrationCheck($old, $successor, $catalog);
+            if ($this->migrationSuccessor($old) !== $successor || ! $this->holdsLocks(self::planPlugins($check['plan']))) {
                 throw new ModMenuException(t(self::MIGRATION_PLAN_CHANGED_MESSAGE), self::MIGRATION_PLAN_CHANGED);
             }
+            $this->runMigration($old, $successor, $catalog, $dependenciesConfirmed, $confirmedDigest, $check);
+            return $successor;
+        });
+    }
+
+    private function runMigration(string $old, string $successor, array $catalog, bool $dependenciesConfirmed, ?string $confirmedDigest, array $check): void
+    {
+        if ($confirmedDigest !== null && ! hash_equals($check['plan_digest'], $confirmedDigest)) {
+            throw new ModMenuException(t(self::MIGRATION_PLAN_CHANGED_MESSAGE), self::MIGRATION_PLAN_CHANGED);
         }
         if ($check['self_update']) {
             throw new ModMenuException(e(self::MIGRATION_SELF_UPDATE_MESSAGE));
@@ -520,26 +515,80 @@ class PluginManager extends Base
 
     private function withPluginLock(string $name, callable $operation): void
     {
-        $lock = $this->acquirePluginLock($name);
+        $this->withPluginLocks([$name], $operation);
+    }
+
+    /**
+     * Run $operation holding every named plugin's lock. Names are deduplicated
+     * by PluginName::key() and locked in ascending key order, so two
+     * operations never wait on each other in opposite orders; a busy lock is
+     * refused, never waited for. Locks already held are reused.
+     */
+    public function withPluginLocks(array $names, callable $operation): mixed
+    {
+        $byKey = [];
+        foreach ($names as $name) {
+            $key = PluginName::key((string) $name);
+            if ($key === null) {
+                throw new ModMenuException(t('Invalid plugin name.'));
+            }
+            $byKey[$key] ??= (string) $name;
+        }
+        ksort($byKey, SORT_STRING);
+
+        $acquired = [];
         try {
-            $operation();
+            foreach ($byKey as $key => $name) {
+                $lock = $this->acquirePluginLock($name);
+                if ($lock !== null) {
+                    $this->heldLocks[$key] = $lock;
+                    $acquired[] = $key;
+                }
+            }
+            return $operation();
         } finally {
-            if ($lock !== null) {
-                fclose($lock);
+            foreach (array_reverse($acquired) as $key) {
+                fclose($this->heldLocks[$key]);
+                unset($this->heldLocks[$key]);
             }
         }
     }
 
-    /** @return resource|null A handle to close, or null when the migration owns it. */
-    private function acquirePluginLock(string $name)
+    private function holdsLocks(array $names): bool
     {
-        $this->guardName($name);
-        if (isset($this->migrationLocks[$name])) {
+        foreach ($names as $name) {
+            if (! isset($this->heldLocks[PluginName::key((string) $name) ?? ''])) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** Plugins a dependency plan would touch; unresolvable steps touch nothing. */
+    private static function planPlugins(array $plan): array
+    {
+        $names = [];
+        foreach ($plan as $step) {
+            if (($step['action'] ?? '') !== 'unresolvable') {
+                $names[] = (string) ($step['plugin'] ?? '');
+            }
+        }
+        return $names;
+    }
+
+    /** @return resource|null A handle to close, or null when this manager already holds the lock. */
+    protected function acquirePluginLock(string $name)
+    {
+        $key = PluginName::key($name);
+        if ($key === null) {
+            throw new ModMenuException(t('Invalid plugin name.'));
+        }
+        if (isset($this->heldLocks[$key])) {
             return null;
         }
         // Keep the file in the data directory so overlapping requests always
         // lock the same inode, even after a previous install closes its handle.
-        $lockPath = dirname($this->disabledDir()) . '/.modmenu-install-' . hash('sha256', $name) . '.lock';
+        $lockPath = dirname($this->disabledDir()) . '/.modmenu-install-' . hash('sha256', $key) . '.lock';
         $lock = @fopen($lockPath, 'c');
         if ($lock === false) {
             throw new ModMenuException(t('Could not lock "%s" for installation.', $name));
@@ -552,10 +601,6 @@ class PluginManager extends Base
                 : t('Could not lock "%s" for installation.', $name));
         }
 
-        if ($this->migrationLocks !== null) {
-            $this->migrationLocks[$name] = $lock;
-            return null;
-        }
         return $lock;
     }
 
@@ -974,12 +1019,14 @@ class PluginManager extends Base
      */
     public function resolveAndActivate(string $name, string $action, string $target, array $plan): void
     {
-        $this->resolveDependencies($plan);
-        if ($action === 'install') {
-            $this->installFromUrl($target, $name);
-        } else {
-            $this->enable($name);
-        }
+        $this->withPluginLocks(array_merge([$name], self::planPlugins($plan)), function () use ($name, $action, $target, $plan): void {
+            $this->resolveDependencies($plan);
+            if ($action === 'install') {
+                $this->installFromUrl($target, $name);
+            } else {
+                $this->enable($name);
+            }
+        });
     }
 
     public function resolveDependencies(array $plan, ?array &$journal = null): void

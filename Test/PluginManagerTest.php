@@ -30,6 +30,17 @@ class MigrationTestPluginManager extends PluginManager
     }
 }
 
+class LockOrderSpyPluginManager extends PluginManager
+{
+    public array $acquired = [];
+
+    protected function acquirePluginLock(string $name)
+    {
+        $this->acquired[] = $name;
+        return parent::acquirePluginLock($name);
+    }
+}
+
 class PluginManagerTest extends Base
 {
     private $root;
@@ -1167,9 +1178,125 @@ class PluginManagerTest extends Base
 
     private function openInstallLock(string $name = 'Harbor')
     {
-        $lock = fopen($this->root . '/.modmenu-install-' . hash('sha256', $name) . '.lock', 'c');
+        $lock = fopen($this->root . '/.modmenu-install-' . hash('sha256', strtolower($name)) . '.lock', 'c');
         $this->assertIsResource($lock);
         return $lock;
+    }
+
+    public function testFooAndfooShareOneLock(): void
+    {
+        $url = 'https://x/foo.zip';
+        $this->stubDownloads([$url => $this->makeZip('foo', '1.0.0')]);
+        $holder = (new PluginManager($this->container))->setDirectories($this->active, $this->disabled);
+        $refused = null;
+
+        $holder->withPluginLocks(['Foo'], function () use ($url, &$refused): void {
+            try {
+                $this->manager->installFromUrl($url, 'foo');
+            } catch (ModMenuException $e) {
+                $refused = $e->getMessage();
+            }
+        });
+
+        $this->assertSame('foo is busy with another ModMenu action. Try again in a moment.', $refused);
+        $this->assertDirectoryDoesNotExist($this->active . '/foo');
+        $this->assertSame('foo', $this->manager->installFromUrl($url, 'foo'));
+    }
+
+    public function testOppositeMigrationsDoNotDeadlock(): void
+    {
+        $second = (new PluginManager($this->container))->setDirectories($this->active, $this->disabled);
+        $refused = null;
+
+        $result = $this->manager->withPluginLocks(['B', 'A'], function () use ($second, &$refused) {
+            try {
+                $second->withPluginLocks(['A', 'B'], fn () => $this->fail('Both sets were locked twice.'));
+            } catch (ModMenuException $e) {
+                $refused = $e->getMessage();
+            }
+            return 'held';
+        });
+
+        $this->assertSame('held', $result);
+        $this->assertSame('A is busy with another ModMenu action. Try again in a moment.', $refused);
+        $this->assertSame('free', $second->withPluginLocks(['A', 'B'], fn () => 'free'));
+    }
+
+    public function testLocksAcquiredInSortedOrder(): void
+    {
+        $spy = (new LockOrderSpyPluginManager($this->container))->setDirectories($this->active, $this->disabled);
+
+        $spy->withPluginLocks(['zeta', 'Alpha', 'mid', 'ZETA'], fn () => null);
+
+        $this->assertSame(['alpha', 'mid', 'zeta'], array_map('strtolower', $spy->acquired));
+    }
+
+    public function testPluginLocksRefuseAnInvalidName(): void
+    {
+        foreach (['bad-name', '', '../x'] as $name) {
+            try {
+                $this->manager->withPluginLocks(['Good', $name], fn () => $this->fail('Locked ' . $name));
+                $this->fail('Expected ' . $name . ' to be refused.');
+            } catch (ModMenuException $e) {
+                $this->assertSame('Invalid plugin name.', $e->getMessage());
+            }
+        }
+    }
+
+    public function testResolveAndActivateHoldsEveryPlanLock(): void
+    {
+        $this->seedPlugin($this->disabled, 'Cal', '1.1.0');
+        $this->seedPluginWithDeps($this->disabled, 'Dep', '1.0.0', [['plugin' => 'Cal', 'min_version' => '1.1.0']]);
+        $plan = [['plugin' => 'Cal', 'action' => 'enable', 'download' => null, 'min_version' => '1.1.0']];
+        $manager = (new MigrationTestPluginManager($this->container))->setDirectories($this->active, $this->disabled);
+        $refused = null;
+        $manager->beforeEnable = function (string $name) use (&$refused): void {
+            if ($name !== 'Cal') {
+                return;
+            }
+            try {
+                $this->manager->enable('Dep');
+            } catch (ModMenuException $e) {
+                $refused = $e->getMessage();
+            }
+        };
+
+        $manager->resolveAndActivate('Dep', 'enable', '', $plan);
+
+        $this->assertSame('Dep is busy with another ModMenu action. Try again in a moment.', $refused);
+        $this->assertDirectoryExists($this->active . '/Cal');
+        $this->assertDirectoryExists($this->active . '/Dep');
+    }
+
+    public function testMigrationRefusesAPlanThatGrowsAfterLocking(): void
+    {
+        $this->seedPlugin($this->active, 'ShadcnTheme', '1.3.0', ['deprecated' => ['superseded_by' => 'Harbor']]);
+        $this->seedPlugin($this->disabled, 'Harbor', '2.0.0');
+        $this->seedPlugin($this->disabled, 'Extra', '1.0.0');
+        $manager = new class ($this->container) extends PluginManager {
+            public int $checks = 0;
+
+            public function migrationCheck(string $old, string $successor, array $catalog): array
+            {
+                $check = parent::migrationCheck($old, $successor, $catalog);
+                if (++$this->checks > 1) {
+                    $check['plan'][] = ['plugin' => 'Extra', 'action' => 'enable', 'download' => null, 'min_version' => null];
+                }
+                return $check;
+            }
+        };
+        $manager->setDirectories($this->active, $this->disabled);
+        $before = $manager->installedMap();
+
+        try {
+            $manager->migrate('ShadcnTheme', [], true);
+            $this->fail('Expected the grown plan to be refused.');
+        } catch (ModMenuException $e) {
+            $this->assertSame(PluginManager::MIGRATION_PLAN_CHANGED, $e->getCode());
+            $this->assertSame(PluginManager::MIGRATION_PLAN_CHANGED_MESSAGE, $e->getMessage());
+        }
+        $this->assertSame($before, $manager->installedMap());
+        $this->assertSame('free', $this->manager->withPluginLocks(['ShadcnTheme', 'Harbor', 'Extra'], fn () => 'free'));
     }
 
     public function testDisabledInstallRefusesToProceedWhilePluginLockIsHeld()
