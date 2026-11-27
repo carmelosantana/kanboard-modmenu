@@ -63,13 +63,15 @@ class SourceRepository extends Base
     public static function sourceKey(string $url): ?string
     {
         $canonical = SourceUrl::canonical($url);
-        $github = GithubUrl::source($canonical ?? $url) ?? GithubUrl::source($url);
-
-        if ($github !== null) {
-            return $github['id'];
+        if ($canonical === null) {
+            return null;
         }
 
-        return $canonical === null ? null : SourceUrl::id($canonical);
+        // canonical() refuses everything GithubUrl refuses in the authority and only
+        // lowercases scheme/host and drops :443, so parsing it covers the raw URL too.
+        $github = GithubUrl::source($canonical);
+
+        return $github !== null ? $github['id'] : SourceUrl::id($canonical);
     }
 
     /**
@@ -118,7 +120,9 @@ class SourceRepository extends Base
 
     public function removeSource(string $url): void
     {
-        $this->changeSources(static fn (array $sources) => array_values(array_filter($sources, static fn ($s) => $s !== $url)));
+        $this->changeSources(static fn (array $sources) => in_array($url, $sources, true)
+            ? array_values(array_filter($sources, static fn ($s) => $s !== $url))
+            : null);
     }
 
     /**
@@ -140,6 +144,12 @@ class SourceRepository extends Base
 
         if (! PrivateState::isTokenRef($tokenRef)) {
             throw new ModMenuException(t('Please enter a vault:// token reference.'));
+        }
+
+        foreach ($listedKeys as $key) {
+            if (! is_string($key) || PluginName::key($key) !== $key) {
+                throw new ModMenuException(t('This private source lists an invalid plugin name.'));
+            }
         }
 
         $id = $source['id'];

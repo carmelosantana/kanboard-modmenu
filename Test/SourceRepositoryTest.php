@@ -135,6 +135,8 @@ class SourceRepositoryTest extends Base
         $this->assertSame($id, SourceRepository::sourceKey('HTTPS://RAW.githubusercontent.com:443/o/r/main/p.json'));
         $this->assertSame($id, SourceRepository::sourceKey(self::PRIVATE_URL));
         $this->assertSame(SourceUrl::id('https://example.com/p.json'), SourceRepository::sourceKey('https://EXAMPLE.com:443/p.json'));
+        $this->assertSame($id, SourceRepository::sourceKey('HTTPS://RAW.GITHUBUSERCONTENT.COM:443/O/R/%6dain/p.json'));
+        $this->assertSame($id, SourceRepository::sourceKey('https://RAW.githubusercontent.com/O/R/%6dain/p.json'));
         $this->assertNull(SourceRepository::sourceKey('http://example.com/p.json'));
     }
 
@@ -283,16 +285,45 @@ class SourceRepositoryTest extends Base
 
     public function testAddPrivateRefusesBadUrlOrRef()
     {
-        foreach ([['https://example.com/p.json', self::REF], [self::PRIVATE_URL, 'https://x'], [self::PRIVATE_URL, 'vault://1/a b']] as [$url, $ref]) {
+        $badUrl = 'Please enter a raw.githubusercontent.com URL to a .json file.';
+        $badRef = 'Please enter a vault:// token reference.';
+        $badKey = 'This private source lists an invalid plugin name.';
+        $cases = [
+            ['https://example.com/p.json', self::REF, [], $badUrl],
+            [self::PRIVATE_URL, 'https://x', [], $badRef],
+            [self::PRIVATE_URL, 'vault://1/a b', [], $badRef],
+            [self::PRIVATE_URL, self::REF, ['Foo'], $badKey],
+            [self::PRIVATE_URL, self::REF, ['foo', 'bad-name'], $badKey],
+            [self::PRIVATE_URL, self::REF, [7], $badKey],
+        ];
+
+        foreach ($cases as [$url, $ref, $keys, $message]) {
             try {
-                $this->repo->addPrivateSource($url, $ref, []);
+                $this->repo->addPrivateSource($url, $ref, $keys);
                 $this->fail('accepted '.$url.' '.$ref);
             } catch (ModMenuException $e) {
-                $this->assertNotSame('', $e->getMessage());
+                $this->assertSame($message, $e->getMessage());
             }
         }
 
         $this->assertFileDoesNotExist($this->dir.'/private-state.json');
+    }
+
+    public function testRemovingAbsentSourceChangesNothing()
+    {
+        $this->repo->addSource('https://example.com/a.json');
+        $this->state()->mutate(fn (array $doc) => $doc);
+        $repo = new SourceRepoProbe($this->container);
+        $saves = 0;
+        $repo->beforeSave = function () use (&$saves) {
+            $saves++;
+        };
+
+        $repo->removeSource('https://example.com/absent.json');
+
+        $this->assertSame(0, $saves);
+        $this->assertSame(0, $this->state()->read()['generation']);
+        $this->assertContains('https://example.com/a.json', $this->repo->getSources());
     }
 
     public function testRemovePrivateKeepsBindingsAndStaysValid()
