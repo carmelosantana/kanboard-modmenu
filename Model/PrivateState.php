@@ -33,8 +33,27 @@ class PrivateState extends Base
     public function __construct(Container $container, ?string $dir = null)
     {
         parent::__construct($container);
-        $this->dir = $dir ?? ($container['modMenuPrivateStateDir'] ?? DATA_DIR.'/modmenu');
+        $this->dir = $dir ?? self::defaultDir($container);
         $this->lockPath = dirname($this->dir).'/modmenu-provenance.lock';
+    }
+
+    /**
+     * The private-state directory, shared with the catalog lock.
+     */
+    public static function defaultDir(Container $container): string
+    {
+        return $container['modMenuPrivateStateDir'] ?? DATA_DIR.'/modmenu';
+    }
+
+    /**
+     * Whether a state file (or anything at its path) is present.
+     */
+    public function hasFile(): bool
+    {
+        $file = $this->dir.'/'.self::FILE;
+        clearstatcache(true, $file);
+
+        return @lstat($file) !== false;
     }
 
     /**
@@ -424,7 +443,10 @@ class PrivateState extends Base
         return $source !== null && $source['id'] === $id;
     }
 
-    private static function isTokenRef(mixed $ref): bool
+    /**
+     * ModMenu's shape rule for a token ref; Vault alone parses it.
+     */
+    public static function isTokenRef(mixed $ref): bool
     {
         return is_string($ref)
             && str_starts_with($ref, 'vault://')
