@@ -6,6 +6,7 @@ use KanboardTests\units\Base;
 use Kanboard\Plugin\ModMenu\Exception\ModMenuException;
 use Kanboard\Plugin\ModMenu\Exception\PrivateStateDamaged;
 use Kanboard\Plugin\ModMenu\Model\GithubUrl;
+use Kanboard\Plugin\ModMenu\Model\CatalogLock;
 use Kanboard\Plugin\ModMenu\Model\PrivateState;
 
 class PrivateStateMarkerReadBackFails extends PrivateState
@@ -93,6 +94,29 @@ class PrivateStateTest extends Base
 
         $this->assertTrue($state->isDamaged());
         $this->assertFalse($state->hasPrivateSources());
+    }
+
+    public function testDamagedCatalogLockIsDamagedState()
+    {
+        $state = new PrivateState($this->container, $this->dir);
+        $state->mutate(fn (array $doc) => $doc);
+        touch($this->dir.'/catalog.lock');
+        chmod($this->dir.'/catalog.lock', 0640);
+
+        $this->assertTrue($state->isDamaged());
+
+        $this->expectException(PrivateStateDamaged::class);
+        (new CatalogLock($this->dir))->shared(fn () => null);
+    }
+
+    public function testHealthyCatalogLockLeavesStateUndamaged()
+    {
+        $state = new PrivateState($this->container, $this->dir);
+        $state->mutate(fn (array $doc) => $doc);
+        (new CatalogLock($this->dir))->shared(fn () => null);
+
+        $this->assertFileExists($this->dir.'/catalog.lock');
+        $this->assertFalse($state->isDamaged());
     }
 
     public function testMissingFileWithMarkerIsDamaged()

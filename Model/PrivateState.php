@@ -40,8 +40,8 @@ class PrivateState extends Base
     /**
      * The current document, read from disk. A missing file is the empty
      * initial state (fixed all-zero epoch, so snapshots of it stay comparable)
-     * only while the marker is unset. A provenance lock that is present but
-     * breaks a rule is damage too.
+     * only while the marker is unset. A provenance or catalog lock that is
+     * present but breaks a rule is damage too.
      *
      * @throws PrivateStateDamaged
      */
@@ -49,6 +49,7 @@ class PrivateState extends Base
     {
         $file = $this->dir.'/'.self::FILE;
         self::inspect($this->lockPath, false);
+        self::inspect($this->dir.'/'.CatalogLock::FILE, false);
 
         if (self::inspect($this->dir, true) === null || ($stat = self::inspect($file, false)) === null) {
             if ($this->markerValue() !== '') {
@@ -65,7 +66,7 @@ class PrivateState extends Base
         }
 
         try {
-            $raw = self::sameFile($handle, $stat) ? stream_get_contents($handle) : false;
+            $raw = SecureFile::sameFile($handle, $stat) ? stream_get_contents($handle) : false;
         } finally {
             fclose($handle);
         }
@@ -349,86 +350,30 @@ class PrivateState extends Base
      */
     private function openLock()
     {
-        if (self::inspect($this->lockPath, false) === null) {
-            $umask = umask(0077);
-            $handle = @fopen($this->lockPath, 'x');
-            umask($umask);
-
-            if ($handle !== false) {
-                chmod($this->lockPath, 0600);
-                return $handle;
-            }
-        }
-
-        // Present (or created by a concurrent request since the check).
-        $stat = self::inspect($this->lockPath, false);
-
-        if ($stat === null) {
-            throw new ModMenuException(t(self::NOT_RECORDED));
-        }
-
-        $handle = @fopen($this->lockPath, 'r');
-
-        if ($handle === false || ! self::sameFile($handle, $stat)) {
-            if ($handle !== false) {
-                fclose($handle);
-            }
-            throw new PrivateStateDamaged();
-        }
-
-        return $handle;
+        return SecureFile::openLockFile($this->lockPath, self::damaged(...), self::notRecorded(...));
     }
 
     private function ensureDir(): void
     {
-        if (self::inspect($this->dir, true) !== null) {
-            return;
-        }
-
-        $umask = umask(0077);
-        @mkdir($this->dir, 0700);
-        umask($umask);
-
-        // Created here or by a concurrent request; either way it must pass.
-        if (self::inspect($this->dir, true) === null) {
-            throw new ModMenuException(t(self::NOT_RECORDED));
-        }
+        SecureFile::ensureDir($this->dir, self::damaged(...), self::notRecorded(...));
     }
 
     /**
-     * lstat() of a path that must be a directory or regular file owned by the
-     * PHP user with no group/world bits; null when absent.
-     *
      * @throws PrivateStateDamaged when present but breaking a rule (a symlink included)
      */
     private static function inspect(string $path, bool $directory): ?array
     {
-        clearstatcache(true, $path);
-        $stat = @lstat($path);
-
-        if ($stat === false) {
-            return null;
-        }
-
-        $type = $stat['mode'] & 0170000;
-
-        if ($type !== ($directory ? 0040000 : 0100000)
-            || (function_exists('posix_geteuid') && $stat['uid'] !== posix_geteuid())
-            || ($stat['mode'] & 0077) !== 0) {
-            throw new PrivateStateDamaged();
-        }
-
-        return $stat;
+        return SecureFile::inspect($path, $directory, self::damaged(...));
     }
 
-    /**
-     * @param resource $handle
-     */
-    private static function sameFile($handle, array $stat): bool
+    private static function damaged(): PrivateStateDamaged
     {
-        $opened = fstat($handle);
+        return new PrivateStateDamaged();
+    }
 
-        return $opened !== false && $opened['dev'] === $stat['dev'] && $opened['ino'] === $stat['ino'];
+    private static function notRecorded(): ModMenuException
+    {
+        return new ModMenuException(t(self::NOT_RECORDED));
     }
 
     /**

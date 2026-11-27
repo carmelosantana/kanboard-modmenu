@@ -3,7 +3,7 @@
 require_once 'tests/units/Base.php';
 
 use KanboardTests\units\Base;
-use Kanboard\Plugin\ModMenu\Exception\ModMenuException;
+use Kanboard\Plugin\ModMenu\Exception\PrivateStateDamaged;
 use Kanboard\Plugin\ModMenu\Model\CatalogLock;
 
 class CatalogLockTest extends Base
@@ -124,8 +124,8 @@ class CatalogLockTest extends Base
             try {
                 (new CatalogLock($this->dir))->$mode(fn () => $this->fail('Ran under an unsafe lock.'));
                 $this->fail('Expected the '.$layout.' to be refused.');
-            } catch (ModMenuException $e) {
-                $this->assertSame('ModMenu could not lock its source list.', $e->getMessage());
+            } catch (PrivateStateDamaged $e) {
+                $this->assertSame("ModMenu's private source state is damaged", $e->getMessage());
             }
         }
     }
@@ -166,18 +166,23 @@ class CatalogLockTest extends Base
             posix_kill(posix_getpid(), SIGKILL);
         }
 
-        $released = (new CatalogLock($this->dir))->shared(function () use ($parentHolds, $childShared, $childExclusive) {
+        try {
+            $released = (new CatalogLock($this->dir))->shared(function () use ($parentHolds, $childShared, $childExclusive) {
+                touch($parentHolds);
+                for ($i = 0; $i < 500 && ! file_exists($childShared); $i++) {
+                    usleep(10000);
+                }
+                $this->assertFileExists($childShared, 'a second shared holder got in');
+                usleep(300000);
+                $this->assertFileDoesNotExist($childExclusive, 'exclusive waited for the shared holder');
+                return microtime(true);
+            });
+        } finally {
+            // Always reap the child, even when an assertion above failed.
             touch($parentHolds);
-            for ($i = 0; $i < 500 && ! file_exists($childShared); $i++) {
-                usleep(10000);
-            }
-            $this->assertFileExists($childShared, 'a second shared holder got in');
-            usleep(300000);
-            $this->assertFileDoesNotExist($childExclusive, 'exclusive waited for the shared holder');
-            return microtime(true);
-        });
+            pcntl_waitpid($pid, $status);
+        }
 
-        pcntl_waitpid($pid, $status);
         $this->assertTrue(pcntl_wifexited($status) && pcntl_wexitstatus($status) === 0, 'child locked successfully');
         $this->assertGreaterThanOrEqual($released, (float) file_get_contents($childExclusive));
     }

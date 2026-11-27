@@ -1203,7 +1203,7 @@ class PluginManagerTest extends Base
         $this->assertSame('foo', $this->manager->installFromUrl($url, 'foo'));
     }
 
-    public function testOppositeMigrationsDoNotDeadlock(): void
+    public function testWithPluginLocksInOppositeOrdersRefusesInsteadOfDeadlocking(): void
     {
         $second = (new PluginManager($this->container))->setDirectories($this->active, $this->disabled);
         $refused = null;
