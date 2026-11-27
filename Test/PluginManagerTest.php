@@ -1155,6 +1155,17 @@ class PluginManagerTest extends Base
         $this->assertSame(['Harbor' => 'active', 'ShadcnTheme' => 'disabled'], array_column($this->manager->listInstalled(), 'status', 'name'));
     }
 
+    public function testMigrationKeepsDependentsTheSuccessorSatisfiesUnderAnotherSpelling()
+    {
+        $this->seedPlugin($this->active, 'ShadcnTheme', '1.3.0', ['deprecated' => ['superseded_by' => 'HARBOR']]);
+        $this->seedPlugin($this->disabled, 'Harbor', '2.0.0');
+        $this->seedPlugin($this->active, 'App', '1.0.0', ['requires' => [['plugin' => 'ShadcnTheme']]]);
+
+        $this->assertSame('Harbor', $this->manager->migrate('ShadcnTheme', [], true));
+
+        $this->assertSame(['App' => 'active', 'Harbor' => 'active', 'ShadcnTheme' => 'disabled'], array_column($this->manager->listInstalled(), 'status', 'name'));
+    }
+
     public function testUpdateAllInstallsEachUpdateAndKeepsGoingPastAFailure()
     {
         $this->seedPlugin($this->active, 'Alpha', '1.0.0');

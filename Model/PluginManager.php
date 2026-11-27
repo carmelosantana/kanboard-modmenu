@@ -1267,12 +1267,14 @@ class PluginManager extends Base
     {
         $map = $this->installedMap();
         $deps = $this->installedPluginsDeps();
-        if ($replacement !== null && isset($map[$replacement])
-            && ($map[$name]['deprecated']['superseded_by'] ?? null) === $replacement) {
+        // Names compare by PluginName::key(): superseded_by may spell the folder differently.
+        $folder = $replacement === null ? null : PluginName::find($map, $replacement);
+        $declared = $map[$name]['deprecated']['superseded_by'] ?? null;
+        if ($folder !== null && is_string($declared) && PluginName::same($declared, $folder)) {
             // Preserve dependencies that the verified replacement will satisfy after the switch.
             $after = $map;
             $after[$name]['status'] = 'disabled';
-            $after[$replacement]['status'] = 'active';
+            $after[$folder]['status'] = 'active';
             foreach ($deps as &$plugin) {
                 $plugin['requires'] = array_filter($plugin['requires'],
                     static fn ($dep) => ! DependencyResolver::isSatisfied($dep, $after));
