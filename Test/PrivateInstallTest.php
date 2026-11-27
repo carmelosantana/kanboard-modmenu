@@ -113,9 +113,10 @@ class PrivateInstallTest extends Base
     {
         $id = $this->privateSource(['Secret' => '1.0.0']);
         $seen = null;
-        $this->manager->atCommit = function () use (&$seen): void {
+        $this->manager->atCommit = function (string $name) use (&$seen): void {
             $seen = $this->bindings();
             $this->assertDirectoryDoesNotExist($this->active.'/Secret');
+            $this->assertLocksHeld($name);
         };
 
         $this->install('Secret');
@@ -337,11 +338,17 @@ class PrivateInstallTest extends Base
         $this->install('Secret');
         $this->fetcher->listings[$id] = [$this->privateEntry('Secret', '2.0.0')];
         $result = $this->fetch();
+        $held = 0;
+        $this->manager->atCommit = function (string $name) use (&$held): void {
+            $this->assertLocksHeld($name);
+            $held++;
+        };
 
         $this->assertSame(['updated' => ['Secret'], 'failed' => []], $this->manager->updateAll($result['plugins'], new MutationGuard($this->container, $result)));
 
         $this->assertSame('2.0.0', $this->version('Secret'));
         $this->assertSame(['secret' => $id], $this->bindings());
+        $this->assertSame(1, $held);
     }
 
     public function testDigestMismatchRefusesAndLeavesBindingUnchanged(): void
@@ -411,6 +418,17 @@ class PrivateInstallTest extends Base
         $this->assertSame(['Alpha'], array_column($this->manager->updatesAvailable($result['plugins']), 'plugin'));
         $this->assertSame(['updated' => ['Alpha'], 'failed' => []], $this->manager->updateAll($result['plugins'], new MutationGuard($this->container, $result)));
         $this->assertSame('2.0.0', $this->version('Alpha'));
+    }
+
+    public function testDismissNeedsAnInstalledUnboundPlugin(): void
+    {
+        $id = $this->privateSource(['Secret' => '1.0.0'], ['alpha']);
+        $this->install('Secret');
+        $result = $this->fetch();
+
+        $this->assertRefused('Plugin &quot;Alpha&quot; is not installed.', fn () => $this->manager->dismiss('Alpha', $id, $result));
+        $this->assertRefused('Secret is already bound to a private source', fn () => $this->manager->dismiss('Secret', $id, $result));
+        $this->assertSame([], $this->state()->read()['dismissed']);
     }
 
     public function testAdoptOnlyOnRequest(): void
@@ -493,6 +511,74 @@ class PrivateInstallTest extends Base
         $this->assertSame([], $check['plan']);
     }
 
+    public function testCallerPlanInstallingAPublicDependencyForAPrivateDependantRefused(): void
+    {
+        $id = $this->privateSource([]);
+        $this->fetcher->listings[$id] = [$this->privateEntry('Secret', '1.0.0', ['requires' => [['plugin' => 'Helper']]])];
+        $this->publicPlugin('Helper', '1.0.0');
+        $result = $this->fetch();
+        $this->manager->setCatalog($result['plugins'], new MutationGuard($this->container, $result));
+        $forged = [['plugin' => 'Helper', 'action' => 'install', 'download' => $this->publicDownload('Helper', '1.0.0'), 'min_version' => null]];
+
+        $this->assertRefused(PluginManager::MIGRATION_PLAN_CHANGED_MESSAGE, fn () => $this->manager->resolveAndActivate('Secret', 'install', $result['plugins']['Secret']['download'], $forged));
+
+        $this->assertDirectoryDoesNotExist($this->active.'/Helper');
+        $this->assertDirectoryDoesNotExist($this->active.'/Secret');
+        $this->assertSame([], $this->fetcher->downloads);
+    }
+
+    public function testBoundPluginEnableGetsThePrivateDependencyRule(): void
+    {
+        $id = $this->privateSource(['Secret' => '1.0.0']);
+        $this->install('Secret');
+        $this->manager->disable('Secret');
+        file_put_contents($this->disabled.'/Secret/plugin.json', json_encode(['name' => 'Secret', 'version' => '1.0.0', 'requires' => [['plugin' => 'Helper']]]));
+        $this->fetcher->listings[$id] = [];
+        $this->publicPlugin('Helper', '1.0.0');
+        $result = $this->fetch();
+        $this->manager->setCatalog($result['plugins'], new MutationGuard($this->container, $result));
+        $forged = [['plugin' => 'Helper', 'action' => 'install', 'download' => $this->publicDownload('Helper', '1.0.0'), 'min_version' => null]];
+
+        $this->assertRefused(PluginManager::MIGRATION_PLAN_CHANGED_MESSAGE, fn () => $this->manager->resolveAndActivate('Secret', 'enable', '', $forged));
+
+        $this->assertDirectoryDoesNotExist($this->active.'/Helper');
+        $this->assertDirectoryExists($this->disabled.'/Secret');
+    }
+
+    public function testNestedPrivateDependencyInACallerPlanRefused(): void
+    {
+        $id = $this->privateSource([]);
+        $this->fetcher->listings[$id] = [$this->privateEntry('Mine', '1.0.0', ['requires' => [['plugin' => 'Helper']]])];
+        $this->publicPlugin('Helper', '1.0.0');
+        $this->publicPlugin('Pub', '1.0.0');
+        $result = $this->fetch();
+        $this->manager->setCatalog($result['plugins'], new MutationGuard($this->container, $result));
+        $forged = [
+            ['plugin' => 'Helper', 'action' => 'install', 'download' => $this->publicDownload('Helper', '1.0.0'), 'min_version' => null],
+            ['plugin' => 'Mine', 'action' => 'install', 'download' => $result['plugins']['Mine']['download'], 'min_version' => null],
+        ];
+
+        $this->assertRefused(PluginManager::MIGRATION_PLAN_CHANGED_MESSAGE, fn () => $this->manager->resolveAndActivate('Pub', 'install', $this->publicDownload('Pub', '1.0.0'), $forged));
+
+        $this->assertDirectoryDoesNotExist($this->active.'/Helper');
+        $this->assertDirectoryDoesNotExist($this->active.'/Mine');
+    }
+
+    public function testPrivateEntryWithoutValidSourceIdFailsClosed(): void
+    {
+        $this->publicPlugin('Alpha', '1.0.0');
+        $result = $this->fetch();
+        $catalog = $result['plugins'];
+        $catalog['Alpha']['private'] = true;
+        $this->manager->setCatalog($catalog, new MutationGuard($this->container, $result));
+
+        $this->assertRefused('Private source unavailable', fn () => $this->manager->installFromUrl($this->publicDownload('Alpha', '1.0.0'), 'Alpha'));
+        $catalog['Alpha']['source_id'] = 'not-an-id';
+        $this->manager->setCatalog($catalog, new MutationGuard($this->container, $result));
+        $this->assertRefused('Private source unavailable', fn () => $this->manager->installFromUrl($this->publicDownload('Alpha', '1.0.0'), 'Alpha'));
+        $this->assertDirectoryDoesNotExist($this->active.'/Alpha');
+    }
+
     public function testChangedSourceIdBetweenConfirmAndRunRefusesPlan(): void
     {
         $this->seed($this->active, 'Old', '1.0.0', ['deprecated' => ['superseded_by' => 'Secret']]);
@@ -527,12 +613,19 @@ class PrivateInstallTest extends Base
         $this->seed($this->active, 'Old', '1.0.0', ['deprecated' => ['superseded_by' => 'Secret']]);
         $result = $this->fetch();
         $digest = $this->manager->migrationCheck('Old', 'Secret', $result['plugins'])['plan_digest'];
+        $held = [];
+        $this->manager->atCommit = function (string $name) use (&$held): void {
+            $this->assertLocksHeld($name);
+            $this->assertLocksHeld('Old');
+            $held[] = $name;
+        };
 
         $this->assertSame('Secret', $this->manager->migrate('Old', $result['plugins'], false, $digest, new MutationGuard($this->container, $result)));
 
         $this->assertSame('1.0.0', $this->version('Secret'));
         $this->assertDirectoryExists($this->disabled.'/Old');
         $this->assertSame(['secret' => $id], $this->bindings());
+        $this->assertSame(['Secret'], $held);
     }
 
     public function testTwoInstalledFoldersOneKeyFailClosed(): void
@@ -681,7 +774,8 @@ class PrivateInstallTest extends Base
     private function competeAtCommit(callable $competitor): Closure
     {
         $refusal = null;
-        $this->manager->atCommit = static function () use ($competitor, &$refusal): void {
+        $this->manager->atCommit = function (string $name) use ($competitor, &$refusal): void {
+            $this->assertLocksHeld($name);
             try {
                 $competitor();
                 $refusal = 'not refused';
@@ -692,6 +786,18 @@ class PrivateInstallTest extends Base
         return static function () use (&$refusal) {
             return $refusal;
         };
+    }
+
+    /** From a fresh handle: the catalog lock is held (shared) and so is $name's plugin lock. */
+    private function assertLocksHeld(string $name): void
+    {
+        foreach ([$this->dir.'/'.CatalogLock::FILE, $this->root.'/.modmenu-install-'.hash('sha256', strtolower($name)).'.lock'] as $path) {
+            $this->assertFileExists($path);
+            $handle = fopen($path, 'r');
+            $this->assertFalse(flock($handle, LOCK_EX | LOCK_NB, $wouldBlock), $path.' is not held');
+            $this->assertSame(1, $wouldBlock);
+            fclose($handle);
+        }
     }
 
     private function assertRefused(string $message, callable $fn): void

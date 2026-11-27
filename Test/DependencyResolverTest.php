@@ -419,4 +419,35 @@ class DependencyResolverTest extends Base
         $this->assertSame(['unresolvable', 'install'], array_column($plan, 'action'));
         $this->assertSame('Install it yourself first', $plan[0]['reason']);
     }
+    public function testVerdictDoesNotDependOnRequirementOrder()
+    {
+        $catalog = [
+            'Helper' => ['version' => '1.0.0', 'download' => 'https://x/helper.zip'],
+            'Mine' => $this->privateEntry(self::SOURCE_A, ['requires' => [['plugin' => 'Helper']]]),
+        ];
+        $verdict = function (array $requires) use ($catalog): array {
+            $out = [];
+            foreach ($this->resolver->resolveClosure($requires, [], $catalog) as $step) {
+                $out[$step['plugin']] = $step['action'];
+            }
+            ksort($out);
+            return $out;
+        };
+
+        $expected = ['Helper' => 'unresolvable', 'Mine' => 'install'];
+        $this->assertSame($expected, $verdict([$this->dep('Helper'), $this->dep('Mine')]));
+        $this->assertSame($expected, $verdict([$this->dep('Mine'), $this->dep('Helper')]));
+    }
+
+    public function testPrivateEntryWithoutAValidSourceIdResolvesNothing()
+    {
+        $catalog = [
+            'Mine' => ['version' => '1.0.0', 'download' => 'https://x/p.zip', 'private' => true, 'requires' => [['plugin' => 'Helper']]],
+            'Helper' => ['version' => '1.0.0', 'download' => 'https://x/helper.zip'],
+        ];
+        $plan = $this->resolver->resolveClosure([$this->dep('Mine')], [], $catalog);
+
+        $this->assertSame('unresolvable', $plan[0]['action']);
+        $this->assertSame('Helper', $plan[0]['plugin']);
+    }
 }

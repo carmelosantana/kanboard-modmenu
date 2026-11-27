@@ -289,6 +289,7 @@ class PluginManager extends Base
             throw new ModMenuException(e(self::MIGRATION_SELF_UPDATE_MESSAGE));
         }
         $this->prepareMigration($old, $catalog);
+        $this->assertPlanSources($check['plan'], self::privateSourceOf($catalog[$successor] ?? null));
         $this->assertMigrationConflicts($old, $successor, $catalog);
         if ($check['blocked'] || (! $check['satisfied'] && ! $dependenciesConfirmed)) {
             throw new ModMenuException(t('"%s" has unmet requirements.', $successor));
@@ -427,14 +428,20 @@ class PluginManager extends Base
         }
         $this->privateState()->mutate(static function (array $fresh) use ($key): array {
             unset($fresh['bindings'][$key]);
-            foreach ($fresh['dismissed'] as $id => $keys) {
-                $fresh['dismissed'][$id] = array_values(array_diff($keys, [$key]));
-                if ($fresh['dismissed'][$id] === []) {
-                    unset($fresh['dismissed'][$id]);
-                }
-            }
-            return $fresh;
+            return self::withoutDismissals($fresh, $key);
         });
+    }
+
+    /** $doc with $key removed from every dismissed list (empty lists dropped). */
+    private static function withoutDismissals(array $doc, string $key): array
+    {
+        foreach ($doc['dismissed'] as $id => $keys) {
+            $doc['dismissed'][$id] = array_values(array_diff($keys, [$key]));
+            if ($doc['dismissed'][$id] === []) {
+                unset($doc['dismissed'][$id]);
+            }
+        }
+        return $doc;
     }
 
     private static function hasProvenance(string $key, array $doc): bool
@@ -521,10 +528,21 @@ class PluginManager extends Base
             : new PrivateFetcher($this->container);
     }
 
-    /** The source id of a private catalog entry, or null for a public one. */
+    /**
+     * The source id of a private catalog entry, or null for a public one.
+     *
+     * @throws ModMenuException for a private entry without a valid source id
+     */
     private static function privateSourceOf(?array $entry): ?string
     {
-        return ! empty($entry['private']) && is_string($entry['source_id'] ?? null) ? $entry['source_id'] : null;
+        if (empty($entry['private'])) {
+            return null;
+        }
+        $id = $entry['source_id'] ?? null;
+        if (! is_string($id) || preg_match('/\A[0-9a-f]{64}\z/', $id) !== 1) {
+            throw new ModMenuException(e(self::PRIVATE_UNAVAILABLE));
+        }
+        return $id;
     }
 
     /** @throws ModMenuException when $name may not come from $entry */
@@ -558,7 +576,11 @@ class PluginManager extends Base
             return t('"%s" is already installed.', $folders[0]);
         }
 
-        $sourceId = self::privateSourceOf($entry);
+        try {
+            $sourceId = self::privateSourceOf($entry);
+        } catch (ModMenuException $e) {
+            return $e->getMessage();
+        }
         $bound = $doc['bindings'][$key] ?? null;
         if ($bound !== null) {
             if ($sourceId !== $bound || ! isset($doc['sources'][$bound]) || $this->catalogCount($key) > 1) {
@@ -1277,7 +1299,11 @@ class PluginManager extends Base
     public function resolveAndActivate(string $name, string $action, string $target, array $plan): void
     {
         $this->guard()->assertCanStart();
-        $this->withPluginLocks(array_merge([$name], self::planPlugins($plan)), fn () => $this->guard()->underCatalog(function () use ($name, $action, $target, $plan): void {
+        $this->withPluginLocks(array_merge([$name], self::planPlugins($plan)), fn () => $this->guard()->underCatalog(function (array $doc) use ($name, $action, $target, $plan): void {
+            $key = PluginName::key($name);
+            $source = self::privateSourceOf($this->catalog[$name] ?? null)
+                ?? ($key === null ? null : ($doc['bindings'][$key] ?? null));
+            $this->assertPlanSources($plan, $source);
             $this->resolveDependencies($plan);
             if ($action === 'install') {
                 $this->installFromUrl($target, $name);
@@ -1285,6 +1311,38 @@ class PluginManager extends Base
                 $this->enable($name);
             }
         }));
+    }
+
+    /**
+     * A plan from the caller may not install a dependency a private plugin
+     * must not get from another source: with a private dependant, every
+     * install/update step comes from its source; and every private step's
+     * own requirements planned here come from that step's source.
+     *
+     * @throws ModMenuException (plan changed)
+     */
+    private function assertPlanSources(array $plan, ?string $dependantSource): void
+    {
+        $sources = [];
+        foreach ($plan as $step) {
+            if (in_array($step['action'] ?? '', ['install', 'update'], true)) {
+                $sources[(string) $step['plugin']] = self::privateSourceOf($this->catalog[$step['plugin']] ?? null);
+            }
+        }
+        $refuse = static fn () => new ModMenuException(t(self::MIGRATION_PLAN_CHANGED_MESSAGE), self::MIGRATION_PLAN_CHANGED);
+        foreach ($sources as $plugin => $source) {
+            if ($dependantSource !== null && $source !== $dependantSource) {
+                throw $refuse();
+            }
+            if ($source === null) {
+                continue;
+            }
+            foreach (self::normalizeDeps($this->catalog[$plugin]['requires'] ?? []) as $dep) {
+                if (array_key_exists($dep['plugin'], $sources) && $sources[$dep['plugin']] !== $source) {
+                    throw $refuse();
+                }
+            }
+        }
     }
 
     // ── provenance actions ───────────────────────────────────────────────
@@ -1304,16 +1362,7 @@ class PluginManager extends Base
         }
 
         $this->withPluginLock($name, fn () => $guard->underCatalog(function (array $doc) use ($guard, $name, $key, $sourceId): void {
-            $folders = $this->installedKeys()[$key] ?? [];
-            if (count($folders) > 1) {
-                throw new ModMenuException(e(self::INSTALLED_DUPLICATE, $name));
-            }
-            if ($folders !== [$name]) {
-                throw new ModMenuException(t('Plugin "%s" is not installed.', $name));
-            }
-            if (isset($doc['bindings'][$key])) {
-                throw new ModMenuException(e('%s is already bound to a private source', $name));
-            }
+            $this->assertInstalledUnbound($name, $key, $doc);
             if (! isset($doc['sources'][$sourceId])) {
                 throw new ModMenuException(e(self::PRIVATE_UNAVAILABLE));
             }
@@ -1326,15 +1375,24 @@ class PluginManager extends Base
                     throw new ModMenuException(e(MutationGuard::CHANGED));
                 }
                 $fresh['bindings'][$key] = $sourceId;
-                foreach ($fresh['dismissed'] as $id => $keys) {
-                    $fresh['dismissed'][$id] = array_values(array_diff($keys, [$key]));
-                    if ($fresh['dismissed'][$id] === []) {
-                        unset($fresh['dismissed'][$id]);
-                    }
-                }
-                return $fresh;
+                return self::withoutDismissals($fresh, $key);
             });
         }));
+    }
+
+    /** One installed folder named exactly $name, with no binding. */
+    private function assertInstalledUnbound(string $name, string $key, array $doc): void
+    {
+        $folders = $this->installedKeys()[$key] ?? [];
+        if (count($folders) > 1) {
+            throw new ModMenuException(e(self::INSTALLED_DUPLICATE, $name));
+        }
+        if ($folders !== [$name]) {
+            throw new ModMenuException(t('Plugin "%s" is not installed.', $name));
+        }
+        if (isset($doc['bindings'][$key])) {
+            throw new ModMenuException(e('%s is already bound to a private source', $name));
+        }
     }
 
     /** Drop a plugin's binding. Needs no fetch; refused while the state is damaged. */
@@ -1372,8 +1430,12 @@ class PluginManager extends Base
             throw new ModMenuException(t('Invalid plugin name.'));
         }
 
-        $guard->underCatalog(function () use ($name, $key, $sourceId): void {
+        $this->withPluginLock($name, fn () => $guard->underCatalog(function (array $doc) use ($name, $key, $sourceId): void {
+            $this->assertInstalledUnbound($name, $key, $doc);
             $this->privateState()->mutate(static function (array $fresh) use ($name, $key, $sourceId): array {
+                if (isset($fresh['bindings'][$key])) {
+                    throw new ModMenuException(e(MutationGuard::CHANGED));
+                }
                 if (! in_array($key, $fresh['seen'][$sourceId] ?? [], true)) {
                     throw new ModMenuException(e(self::NOT_LISTED, $name));
                 }
@@ -1382,7 +1444,7 @@ class PluginManager extends Base
                 }
                 return $fresh;
             });
-        });
+        }));
     }
 
     public function resolveDependencies(array $plan, ?array &$journal = null): void
