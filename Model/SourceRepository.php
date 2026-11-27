@@ -29,6 +29,7 @@ class SourceRepository extends Base
     public const NOT_A_TOKEN_REF = 'Please enter a vault:// token reference.';
 
     private const DUPLICATE = 'Duplicate source; remove and re-add it';
+    private const NOT_CONFIGURED = 'That private source is not configured.';
 
     public function getSources(): array
     {
@@ -200,7 +201,8 @@ class SourceRepository extends Base
 
     /**
      * Moves a private source to removed, dropping its seen and dismissed
-     * names and keeping its bindings. Needs no fetch; unknown ids are ignored.
+     * names and keeping its bindings. Needs no fetch; an unknown id is refused
+     * and nothing is written.
      */
     public function removePrivateSource(string $id): void
     {
@@ -208,12 +210,12 @@ class SourceRepository extends Base
             $state = $this->privateState();
 
             if (! array_key_exists($id, $state->read()['sources'])) {
-                return;
+                throw new ModMenuException(e(self::NOT_CONFIGURED));
             }
 
             $state->mutate(function (array $doc) use ($id) {
                 if (! array_key_exists($id, $doc['sources'])) {
-                    return $doc;
+                    throw new ModMenuException(e(self::NOT_CONFIGURED));
                 }
 
                 $doc['removed'][$id] = $doc['sources'][$id]['url'];

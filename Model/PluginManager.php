@@ -1479,7 +1479,7 @@ class PluginManager extends Base
 
         $this->withPluginLock($name, function () use ($name, $key): void {
             if (! isset($this->privateState()->read()['bindings'][$key])) {
-                return;
+                throw new ModMenuException(t('%s is not bound to a private source, so there is nothing to unbind.', $name));
             }
             $this->beforeCommit($name);
             $this->privateState()->mutate(static function (array $fresh) use ($key): array {

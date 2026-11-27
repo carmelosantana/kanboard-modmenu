@@ -445,6 +445,23 @@ class PrivateSourcesFlowTest extends Base
         $this->assertStringContainsString('Secret', $this->bodies[0]);
     }
 
+    public function testNoOpUnbindAndRemoveFlashFailure(): void
+    {
+        $this->privatePlugin('Secret', '1.0.0');
+        $this->addPrivate();
+        $this->seed('Loose', '1.0.0');
+        $before = $this->state()->read();
+
+        $this->call('unbind', ['name' => 'Loose']);
+        $this->call('removePrivateSource', ['id' => str_repeat('f', 64)]);
+
+        $this->assertSame([
+            ['failure', 'Loose is not bound to a private source, so there is nothing to unbind.'],
+            ['failure', 'That private source is not configured.'],
+        ], array_slice($this->flashes, -2));
+        $this->assertSame($before, $this->state()->read());
+    }
+
     public function testUninstallAndUnbindRefusedWhileFrozen(): void
     {
         $this->seed('Secret', '1.0.0');

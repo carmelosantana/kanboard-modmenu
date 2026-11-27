@@ -288,6 +288,18 @@ class PrivateInstallTest extends Base
         $this->assertDirectoryExists($this->active.'/Secret');
     }
 
+    public function testUnbindWithoutABindingSaysSoAndWritesNothing(): void
+    {
+        $id = $this->privateSource(['Secret' => '1.0.0']);
+        $this->seed($this->active, 'Loose', '1.0.0');
+        $before = $this->state()->read();
+
+        $this->assertRefused('Loose is not bound to a private source, so there is nothing to unbind.', fn () => $this->manager->unbind('Loose'));
+        $this->assertRefused('Ghost is not bound to a private source, so there is nothing to unbind.', fn () => $this->manager->unbind('Ghost'));
+
+        $this->assertSame($before, $this->state()->read());
+    }
+
     public function testUnbindWorksWhileDown(): void
     {
         $id = $this->privateSource(['Secret' => '1.0.0', 'Other' => '1.0.0']);

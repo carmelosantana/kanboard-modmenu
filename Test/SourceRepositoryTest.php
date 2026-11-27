@@ -349,6 +349,23 @@ class SourceRepositoryTest extends Base
         $this->assertSame([], $this->repo->getPrivateSources());
     }
 
+    public function testRemovingAnUnknownPrivateSourceSaysSoAndWritesNothing()
+    {
+        $this->repo->addPrivateSource(self::PRIVATE_URL, self::REF, ['foo']);
+        $before = $this->state()->read();
+
+        foreach ([str_repeat('f', 64), 'not-an-id', ''] as $id) {
+            try {
+                $this->repo->removePrivateSource($id);
+                $this->fail('an unknown id must not report success');
+            } catch (ModMenuException $e) {
+                $this->assertSame('That private source is not configured.', $e->getMessage());
+            }
+        }
+
+        $this->assertSame($before, $this->state()->read());
+    }
+
     public function testReaddMovesBackFromRemoved()
     {
         $source = GithubUrl::source(self::PRIVATE_URL);

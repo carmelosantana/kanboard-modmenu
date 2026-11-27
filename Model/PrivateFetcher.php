@@ -187,7 +187,8 @@ class PrivateFetcher extends Base
     private static function assetId(array $release, string $asset): int
     {
         $matches = array_values(array_filter(
-            is_array($release['assets'] ?? null) ? $release['assets'] : [],
+            // A JSON object is not a release asset list.
+            is_array($release['assets'] ?? null) && array_is_list($release['assets']) ? $release['assets'] : [],
             static fn ($entry): bool => is_array($entry) && ($entry['name'] ?? null) === $asset
         ));
         $id = $matches[0]['id'] ?? null;
