@@ -253,6 +253,12 @@ class PrivateFetcherTest extends Base
         $this->vault->description = new PrivateFetcherVaultRefusal('server_off');
         $this->assertSame('vault_off', $this->fetcher()->describe(self::REF));
 
+        $this->vault->description = (object) ['ok' => false, 'reason' => 'server_key_unavailable'];
+        $this->assertSame('vault_off', $this->fetcher()->describe(self::REF));
+
+        $this->vault->description = new PrivateFetcherVaultRefusal('server_key_unavailable');
+        $this->assertSame('vault_off', $this->fetcher()->describe(self::REF));
+
         $this->vault->description = new \RuntimeException('boom');
         $this->assertSame('not_shared', $this->fetcher()->describe(self::REF));
 

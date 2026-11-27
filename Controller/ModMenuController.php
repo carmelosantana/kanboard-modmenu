@@ -113,8 +113,17 @@ class ModMenuController extends BaseController
     {
         $this->requireAdmin();
         $repository = new SourceRepository($this->container);
-        $state = new PrivateState($this->container);
+        $state = $this->privateState();
+        $private = ['private_sources' => [], 'removed_sources' => []];
         $frozen = $state->isDamaged();
+        if (! $frozen) {
+            try {
+                // The state can be damaged between the check and this read.
+                $private = $this->privateRows($state->read(), $repository);
+            } catch (PrivateStateDamaged $e) {
+                $frozen = true;
+            }
+        }
 
         $this->response->html($this->helper->layout->config('ModMenu:settings/sources', [
             'title' => t('ModMenu'),
@@ -122,7 +131,12 @@ class ModMenuController extends BaseController
             'sources' => $repository->getSources(),
             'default_source' => SourceRepository::DEFAULT_SOURCE,
             'frozen' => $frozen,
-        ] + ($frozen ? ['private_sources' => [], 'removed_sources' => []] : $this->privateRows($state->read(), $repository))));
+        ] + $private));
+    }
+
+    protected function privateState(): PrivateState
+    {
+        return new PrivateState($this->container);
     }
 
     /**
@@ -760,6 +774,10 @@ class ModMenuController extends BaseController
         }
     }
 
+    /**
+     * The private fetcher (R1). Typed object, as in DirectoryClient and
+     * PluginManager: tests inject duck-typed fakes under modMenuPrivateFetcher.
+     */
     private function privateFetcher(): object
     {
         return $this->container['modMenuPrivateFetcher'] ?? new PrivateFetcher($this->container);

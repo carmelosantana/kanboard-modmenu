@@ -145,6 +145,9 @@ class PrivateFetcher extends Base
         ));
     }
 
+    /** Reasons meaning Vault cannot read for Server at all: shown as 'vault_off'. */
+    private const VAULT_OFF_REASONS = ['server_off', 'server_key_unavailable'];
+
     /** Whether Vault shares the token: 'shared', 'not_shared' or 'vault_off'. Never throws. */
     public function describe(string $ref): string
     {
@@ -157,10 +160,11 @@ class PrivateFetcher extends Base
             if (! empty($status->ok)) {
                 return 'shared';
             }
-            return ($status->reason ?? null) === 'server_off' ? 'vault_off' : 'not_shared';
+            $reason = $status->reason ?? null;
         } catch (\Throwable $e) {
-            return self::reasonOf($e) === 'server_off' ? 'vault_off' : 'not_shared';
+            $reason = self::reasonOf($e);
         }
+        return in_array($reason, self::VAULT_OFF_REASONS, true) ? 'vault_off' : 'not_shared';
     }
 
     /** @return array{owner: string, repo: string, endpoint: string} */

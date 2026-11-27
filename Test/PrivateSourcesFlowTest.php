@@ -24,6 +24,33 @@ class PrivateSourcesFlowController extends ModMenuController
     }
 }
 
+/** The real controller, damaging the state between the sources page's check and its read. */
+class PrivateSourcesFlowRacingController extends PrivateSourcesFlowController
+{
+    public ?Closure $afterCheck = null;
+
+    protected function privateState(): \Kanboard\Plugin\ModMenu\Model\PrivateState
+    {
+        $afterCheck = $this->afterCheck;
+        return new class ($this->container, $afterCheck) extends \Kanboard\Plugin\ModMenu\Model\PrivateState {
+            public function __construct($container, private ?Closure $afterCheck)
+            {
+                parent::__construct($container);
+            }
+
+            public function isDamaged(): bool
+            {
+                $damaged = parent::isDamaged();
+                if ($this->afterCheck !== null) {
+                    ($this->afterCheck)();
+                    $this->afterCheck = null;
+                }
+                return $damaged;
+            }
+        };
+    }
+}
+
 /** The real upload controller, with a real PluginManager working in the test's folders. */
 class PrivateSourcesFlowUploadController extends UploadController
 {
@@ -183,6 +210,33 @@ class PrivateSourcesFlowTest extends Base
         ], $this->flashes);
         $this->assertSame(0, $this->vault->reads);
         $this->assertFalse($this->state()->hasFile());
+    }
+
+    public function testAddPrivateSourceRefusedWhileFrozenWithoutAskingVault(): void
+    {
+        $this->privatePlugin('Secret', '1.0.0');
+        $this->damage();
+
+        $this->call('addPrivateSource', ['url' => self::PRIVATE_URL, 'token_ref' => self::REF]);
+
+        $this->assertSame([['failure', e("ModMenu's private source state is damaged")]], $this->flashes);
+        $this->assertSame(0, $this->vault->reads);
+        $this->assertTrue($this->state()->isDamaged());
+    }
+
+    public function testSourcesPageShowsFrozenBannerWhenStateIsDamagedAfterTheCheck(): void
+    {
+        $this->privatePlugin('Secret', '1.0.0');
+        $this->addPrivate();
+        $controller = new PrivateSourcesFlowRacingController($this->container);
+        $controller->realManager = $this->manager;
+        $controller->afterCheck = fn () => file_put_contents($this->dir.'/private-state.json', 'not json');
+
+        $controller->sources();
+
+        $this->assertCount(1, $this->bodies);
+        $this->assertStringContainsString(e("ModMenu's private source state is damaged"), $this->bodies[0]);
+        $this->assertStringNotContainsString(self::REF, $this->bodies[0]);
     }
 
     public function testRemovePrivateSourceWorksWhileDown(): void
@@ -384,6 +438,38 @@ class PrivateSourcesFlowTest extends Base
             ['failure', e("ModMenu's private source state is damaged")],
         ], $this->flashes);
         $this->assertDirectoryDoesNotExist($this->active.'/Alpha');
+    }
+
+    public function testLegacyUrlInstallRefusedWhilePrivateSourceDownOrFrozen(): void
+    {
+        $this->publicPlugin('Alpha', '1.0.0');
+        $this->privatePlugin('Secret', '1.0.0');
+        $this->addPrivate();
+        $this->routes[self::PRIVATE_URL] = static fn () => [500, null];
+        $this->call('install', ['archive_url' => 'https://public.example/Alpha-1.0.0.zip']);
+
+        $this->routes[self::PRIVATE_URL] = $this->listingRoute($this->privatePlugins);
+        $this->damage();
+        $this->call('install', ['archive_url' => 'https://public.example/Alpha-1.0.0.zip']);
+
+        $this->assertSame([
+            ['failure', 'Private sources must be reachable to change plugins'],
+            ['failure', e("ModMenu's private source state is damaged")],
+        ], $this->flashes);
+        $this->assertDirectoryDoesNotExist($this->active.'/Alpha');
+        $this->assertSame([], array_filter($this->requests, static fn (array $r) => $r['url'] === 'https://public.example/Alpha-1.0.0.zip'));
+    }
+
+    public function testLegacyUrlInstallWorksWithPrivateSourceUp(): void
+    {
+        $this->publicPlugin('Alpha', '1.0.0');
+        $this->privatePlugin('Secret', '1.0.0');
+        $this->addPrivate();
+
+        $this->call('install', ['archive_url' => 'https://public.example/Alpha-1.0.0.zip']);
+
+        $this->assertSame([['success', 'Plugin installed.']], $this->flashes);
+        $this->assertSame('1.0.0', $this->version('Alpha'));
     }
 
     public function testUploadWithoutPrivateStateFetchesNothing(): void
