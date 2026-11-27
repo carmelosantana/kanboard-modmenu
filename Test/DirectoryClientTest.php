@@ -4,17 +4,465 @@ require_once 'tests/units/Base.php';
 
 use KanboardTests\units\Base;
 use Kanboard\Plugin\ModMenu\Model\ArchiveDownloader;
+use Kanboard\Plugin\ModMenu\Exception\ModMenuException;
 use Kanboard\Plugin\ModMenu\Model\DirectoryClient;
+use Kanboard\Plugin\ModMenu\Model\GithubUrl;
+use Kanboard\Plugin\ModMenu\Model\PrivateState;
 use Kanboard\Plugin\ModMenu\Model\SourceRepository;
+
+class DirectoryClientStateWriteFails extends PrivateState
+{
+    protected function writeAtomic(string $json): void
+    {
+        throw new ModMenuException('injected write failure');
+    }
+}
+
+/** A client whose private-state store a test can swap. */
+class DirectoryClientProbe extends DirectoryClient
+{
+    public ?PrivateState $state = null;
+
+    protected function privateState(): PrivateState
+    {
+        return $this->state ?? parent::privateState();
+    }
+}
+
+/** A stand-in for PrivateFetcher: listings or exceptions per source id. */
+class DirectoryClientFakeFetcher
+{
+    public array $responses = [];
+    public array $calls = [];
+    /** @var callable|null */
+    public $during = null;
+
+    public function fetchDirectory(array $source): array
+    {
+        $this->calls[] = $source;
+        if ($this->during !== null) {
+            ($this->during)($source);
+        }
+        $response = $this->responses[$source['id']] ?? [];
+        if ($response instanceof \Throwable) {
+            throw $response;
+        }
+        return $response;
+    }
+}
 
 class DirectoryClientTest extends Base
 {
+    private const PUBLIC_URL = 'https://catalog.example/plugins.json';
+    private const PRIVATE_URL = 'https://raw.githubusercontent.com/acme/dir/main/plugins.json';
+    private const OTHER_PRIVATE_URL = 'https://raw.githubusercontent.com/acme/dir/main/more.json';
+    private const REF = 'vault://1/token';
+    /** The fetchAll() keys 1.7 adds, as they read with no private source. */
+    private const NO_PRIVATE = [
+        'private_ok' => true,
+        'frozen' => false,
+        'snapshot' => ['epoch' => '00000000000000000000000000000000', 'generation' => 0],
+        'quarantined' => [],
+        'listed' => [],
+    ];
+
     private $client;
+    private string $root;
+    private string $dir;
+    private DirectoryClientFakeFetcher $fetcher;
 
     public function setUp(): void
     {
         parent::setUp();
+        $this->root = sys_get_temp_dir().'/modmenu-directory-'.bin2hex(random_bytes(6));
+        mkdir($this->root, 0700);
+        $this->dir = $this->root.'/modmenu';
+        $this->container['modMenuPrivateStateDir'] = $this->dir;
+        $this->fetcher = new DirectoryClientFakeFetcher();
+        $this->container['modMenuPrivateFetcher'] = $this->fetcher;
         $this->client = new DirectoryClient($this->container);
+    }
+
+    public function tearDown(): void
+    {
+        $this->removeTree($this->root);
+        parent::tearDown();
+    }
+
+    // ── Private sources ────────────────────────────────────────────────────
+
+    public function testForgedPrivateAndSourceIdStripped(): void
+    {
+        $id = $this->addPrivate(self::PRIVATE_URL);
+        $this->publicListing([
+            ['name' => 'Alpha', 'private' => true, 'source_id' => $id],
+        ]);
+        $this->fetcher->responses[$id] = [$this->privateEntry('Secret', ['private' => false, 'source_id' => 'forged'])];
+
+        $result = $this->client->fetchAll();
+        $plugins = DirectoryClient::indexByName($result['plugins']);
+
+        $this->assertSame([], $result['errors']);
+        $this->assertArrayNotHasKey('private', $plugins['Alpha']);
+        $this->assertArrayNotHasKey('source_id', $plugins['Alpha']);
+        $this->assertTrue($plugins['Secret']['private']);
+        $this->assertSame($id, $plugins['Secret']['source_id']);
+        $this->assertSame([['id' => $id, 'url' => GithubUrl::source(self::PRIVATE_URL)['endpoint'], 'token_ref' => self::REF]], $this->fetcher->calls);
+        $this->assertTrue($result['private_ok']);
+    }
+
+    public function testCollisionAcrossSourcesRemovedAndReported(): void
+    {
+        $id = $this->addPrivate(self::PRIVATE_URL);
+        $this->publicListing([['name' => 'Foo'], ['name' => 'Alpha']]);
+        $this->fetcher->responses[$id] = [$this->privateEntry('foo'), $this->privateEntry('Secret')];
+
+        $result = $this->client->fetchAll();
+
+        $this->assertSame(['Alpha', 'Secret'], array_column($result['plugins'], 'name'));
+        $this->assertSame([['url' => '', 'message' => 'Foo is listed by more than one source']], $result['errors']);
+    }
+
+    public function testDuplicateInOnePrivateSourceRemoved(): void
+    {
+        $id = $this->addPrivate(self::PRIVATE_URL);
+        $this->publicListing([['name' => 'Alpha']]);
+        $this->fetcher->responses[$id] = [$this->privateEntry('Dup'), $this->privateEntry('Secret'), $this->privateEntry('DUP')];
+
+        $result = $this->client->fetchAll();
+
+        $this->assertSame(['Alpha', 'Secret'], array_column($result['plugins'], 'name'));
+        $this->assertSame([['url' => '', 'message' => 'Dup is listed by more than one source']], $result['errors']);
+        $this->assertSame([$id => ['dup', 'secret']], $result['listed']);
+    }
+
+    public function testBoundPluginIgnoresPublicSameName(): void
+    {
+        $id = $this->addPrivate(self::PRIVATE_URL);
+        $gone = GithubUrl::source(self::OTHER_PRIVATE_URL)['id'];
+        $this->state()->mutate(function (array $doc) use ($id, $gone) {
+            $doc['removed'][$gone] = GithubUrl::source(self::OTHER_PRIVATE_URL)['endpoint'];
+            $doc['bindings'] = ['secret' => $id, 'orphan' => $gone];
+            return $doc;
+        });
+        $this->publicListing([['name' => 'Secret', 'version' => '9.9.9'], ['name' => 'Orphan'], ['name' => 'Alpha']]);
+        $this->fetcher->responses[$id] = [$this->privateEntry('Secret')];
+
+        $result = $this->client->fetchAll();
+        $plugins = DirectoryClient::indexByName($result['plugins']);
+
+        $this->assertSame([], $result['errors']);
+        $this->assertSame(['Secret', 'Alpha'], array_keys($plugins));
+        $this->assertSame('1.0.0', $plugins['Secret']['version']);
+        $this->assertSame($id, $plugins['Secret']['source_id']);
+    }
+
+    public function testSeenMergedAddOnly(): void
+    {
+        $id = $this->addPrivate(self::PRIVATE_URL, ['old']);
+        $this->publicListing([]);
+        $this->fetcher->responses[$id] = [$this->privateEntry('Secret'), $this->privateEntry('Other')];
+
+        $first = $this->client->fetchAll();
+        $doc = $this->state()->read();
+
+        $this->assertSame(['old', 'secret', 'other'], $doc['seen'][$id]);
+        $this->assertSame(['epoch' => $doc['epoch'], 'generation' => $doc['generation']], $first['snapshot']);
+        $this->assertSame([$id => ['secret', 'other']], $first['listed']);
+        $this->assertTrue($first['private_ok']);
+
+        $this->fetcher->responses[$id] = [$this->privateEntry('Newer')];
+        $second = $this->client->fetchAll();
+
+        $this->assertSame(['old', 'secret', 'other', 'newer'], $this->state()->read()['seen'][$id]);
+        $this->assertSame(['Newer'], array_column($second['plugins'], 'name'));
+        $this->assertSame([], $second['quarantined']);
+    }
+
+    public function testSeenForRemovedIdDiscarded(): void
+    {
+        $id = $this->addPrivate(self::PRIVATE_URL);
+        $kept = $this->addPrivate(self::OTHER_PRIVATE_URL);
+        $this->publicListing([['name' => 'Alpha']]);
+        $this->fetcher->responses[$id] = [$this->privateEntry('Secret')];
+        $this->fetcher->responses[$kept] = [$this->privateEntry('Kept')];
+        $this->fetcher->during = function (array $source) use ($id) {
+            if ($source['id'] === $id) {
+                (new SourceRepository($this->container))->removePrivateSource($id);
+            }
+        };
+
+        $result = $this->client->fetchAll();
+        $doc = $this->state()->read();
+
+        $this->assertSame([$kept => ['kept']], $doc['seen']);
+        $this->assertSame([$kept => ['kept']], $result['listed']);
+        $this->assertSame(['Alpha', 'Kept'], array_column($result['plugins'], 'name'));
+        $this->assertFalse($result['private_ok']);
+        $this->assertSame(['epoch' => $doc['epoch'], 'generation' => $doc['generation']], $result['snapshot']);
+    }
+
+    public function testFailedSeenWriteQuarantinesNamesAndSetsPrivateNotOk(): void
+    {
+        $id = $this->addPrivate(self::PRIVATE_URL);
+        $before = $this->state()->read();
+        $this->publicListing([['name' => 'Alpha'], ['name' => 'SECRET']]);
+        $this->fetcher->responses[$id] = [$this->privateEntry('Secret'), ['name' => 'Bad', 'sha256' => 'nope']];
+        $client = new DirectoryClientProbe($this->container);
+        $client->state = new DirectoryClientStateWriteFails($this->container, $this->dir);
+
+        $result = $client->fetchAll();
+
+        $this->assertSame(['Alpha'], array_column($result['plugins'], 'name'));
+        $this->assertSame(['secret', 'bad'], $result['quarantined']);
+        $this->assertFalse($result['private_ok']);
+        $this->assertFalse($result['frozen']);
+        $this->assertSame([], $result['listed']);
+        $this->assertSame(['epoch' => null, 'generation' => null], $result['snapshot']);
+        $this->assertSame([[
+            'url' => GithubUrl::source(self::PRIVATE_URL)['endpoint'],
+            'message' => "ModMenu could not record this private source's plugin names",
+        ]], $result['errors']);
+        $this->assertStringNotContainsString('injected', json_encode($result));
+        $this->assertSame($before, $this->state()->read());
+    }
+
+    public function testPrivateSourceDownMeansPrivateNotOkButPublicListed(): void
+    {
+        $id = $this->addPrivate(self::PRIVATE_URL);
+        $other = $this->addPrivate(self::OTHER_PRIVATE_URL);
+        $this->publicListing([['name' => 'Alpha']]);
+        $this->fetcher->responses[$id] = new ModMenuException('GitHub refused the token for this source (check its access to acme/dir)');
+        $this->fetcher->responses[$other] = new \RuntimeException('Authorization: token ghp_SECRETSECRETSECRETSECRET');
+
+        $result = $this->client->fetchAll();
+
+        $this->assertSame(['Alpha'], array_column($result['plugins'], 'name'));
+        $this->assertFalse($result['private_ok']);
+        $this->assertSame([
+            ['url' => GithubUrl::source(self::PRIVATE_URL)['endpoint'], 'message' => 'GitHub refused the token for this source (check its access to acme/dir)'],
+            ['url' => GithubUrl::source(self::OTHER_PRIVATE_URL)['endpoint'], 'message' => "Couldn't load this private source."],
+        ], $result['errors']);
+        $this->assertStringNotContainsString('ghp_', json_encode($result));
+        $this->assertSame([], $result['listed']);
+    }
+
+    public function testFrozenStateRendersPublicOnly(): void
+    {
+        $this->addPrivate(self::PRIVATE_URL);
+        file_put_contents($this->dir.'/private-state.json', '{"broken":"DAMAGED-CONTENT"');
+        $this->publicListing([['name' => 'Alpha']]);
+
+        $result = $this->client->fetchAll();
+
+        $this->assertSame([], $this->fetcher->calls);
+        $this->assertTrue($result['frozen']);
+        $this->assertFalse($result['private_ok']);
+        $this->assertSame(['Alpha'], array_column($result['plugins'], 'name'));
+        $this->assertSame([], $result['errors']);
+        $this->assertSame(['epoch' => null, 'generation' => null], $result['snapshot']);
+        $this->assertStringNotContainsString('DAMAGED-CONTENT', json_encode($result));
+        $this->assertSame('{"broken":"DAMAGED-CONTENT"', file_get_contents($this->dir.'/private-state.json'));
+    }
+
+    public function testPrivateEntryWithoutSha256Dropped(): void
+    {
+        $id = $this->addPrivate(self::PRIVATE_URL);
+        $this->publicListing([['name' => 'Alpha']]);
+        $missing = $this->privateEntry('Missing');
+        unset($missing['sha256']);
+        $this->fetcher->responses[$id] = [
+            $missing,
+            $this->privateEntry('Short', ['sha256' => str_repeat('a', 63)]),
+            $this->privateEntry('Typed', ['sha256' => ['x']]),
+            $this->privateEntry('Upper', ['sha256' => str_repeat('A', 64)]),
+        ];
+
+        $result = $this->client->fetchAll();
+        $url = GithubUrl::source(self::PRIVATE_URL)['endpoint'];
+        $message = static fn ($n) => ['url' => $url, 'message' => "Skipped $n: a private plugin needs a valid sha256 checksum"];
+
+        $this->assertSame(['Alpha', 'Upper'], array_column($result['plugins'], 'name'));
+        $this->assertSame([$message('Missing'), $message('Short'), $message('Typed')], $result['errors']);
+        $this->assertSame([$id => ['missing', 'short', 'typed', 'upper']], $result['listed']);
+    }
+
+    public function testPrivateDownloadOwnerMismatchDropped(): void
+    {
+        $id = $this->addPrivate(self::PRIVATE_URL);
+        $this->publicListing([]);
+        $this->fetcher->responses[$id] = [
+            $this->privateEntry('Theirs', ['download' => 'https://github.com/mallory/x/releases/download/v1/X.zip']),
+            $this->privateEntry('Archive', ['download' => 'https://github.com/acme/x/archive/refs/tags/v1.zip']),
+            $this->privateEntry('Absent', ['download' => null]),
+            $this->privateEntry('Cased', ['download' => 'https://github.com/ACME/x/releases/download/v1/X.zip']),
+        ];
+
+        $result = $this->client->fetchAll();
+        $url = GithubUrl::source(self::PRIVATE_URL)['endpoint'];
+        $message = static fn ($n) => ['url' => $url, 'message' => "Skipped $n: its download is not a release in this source's GitHub account"];
+
+        $this->assertSame(['Cased'], array_column($result['plugins'], 'name'));
+        $this->assertSame([$message('Theirs'), $message('Archive'), $message('Absent')], $result['errors']);
+    }
+
+    public function testInvalidNameDropped(): void
+    {
+        $id = $this->addPrivate(self::PRIVATE_URL);
+        $this->publicListing([['name' => 'Bad-Name'], ['name' => ''], ['version' => '1.0.0'], 'scalar', ['name' => "<b>O'Hara"], ['name' => 'Alpha']]);
+        $this->fetcher->responses[$id] = [$this->privateEntry(str_repeat('x', 65)), $this->privateEntry('Secret')];
+
+        $result = $this->client->fetchAll();
+        $message = static fn ($url, $n) => ['url' => $url, 'message' => "Skipped an entry with an invalid plugin name: $n"];
+
+        $this->assertSame(['Alpha', 'Secret'], array_column($result['plugins'], 'name'));
+        $this->assertSame([
+            $message(self::PUBLIC_URL, 'Bad-Name'),
+            $message(self::PUBLIC_URL, ''),
+            $message(self::PUBLIC_URL, ''),
+            $message(self::PUBLIC_URL, ''),
+            $message(self::PUBLIC_URL, "<b>O'Hara"),
+            $message(GithubUrl::source(self::PRIVATE_URL)['endpoint'], str_repeat('x', 65)),
+        ], $result['errors']);
+        $this->assertSame([$id => ['secret']], $result['listed']);
+    }
+
+    public function testNoPrivateSourcesIsUnchanged(): void
+    {
+        $this->publicListing([['name' => 'Foo', 'version' => '1.0.0'], ['name' => 'Foo', 'version' => '2.0.0'], ['name' => 'Bar']]);
+
+        $result = $this->client->fetchAll();
+
+        $this->assertSame(['plugins', 'errors', 'private_ok', 'frozen', 'snapshot', 'quarantined', 'listed'], array_keys($result));
+        $this->assertSame(['Foo', 'Bar'], array_column($result['plugins'], 'name'));
+        $this->assertSame('1.0.0', $result['plugins'][0]['version']);
+        $this->assertSame([self::PUBLIC_URL, self::PUBLIC_URL], array_column($result['plugins'], 'source_url'));
+        $this->assertSame([], $result['errors']);
+        $this->assertTrue($result['private_ok']);
+        $this->assertFalse($result['frozen']);
+        $this->assertSame(['epoch' => str_repeat('0', 32), 'generation' => 0], $result['snapshot']);
+        $this->assertSame([], $result['quarantined']);
+        $this->assertSame([], $result['listed']);
+        $this->assertSame([], $this->fetcher->calls);
+        $this->assertFileDoesNotExist($this->dir.'/private-state.json');
+    }
+
+    public function testDuplicateSourceFailsClosedWithoutFetching(): void
+    {
+        $id = $this->addPrivate(self::PRIVATE_URL);
+        $public = 'https://raw.githubusercontent.com/ACME/dir/main/plugins.json';
+        $this->container['configModel']->save([SourceRepository::CONFIG_KEY => json_encode([$public])]);
+        $this->container['memoryCache']->flush();
+        $this->container['modMenuDirectoryDownloader'] = new ArchiveDownloader(
+            static fn () => ['140.82.112.3'],
+            function () {
+                $this->fail('a duplicate source was fetched');
+            }
+        );
+
+        $result = $this->client->fetchAll();
+
+        $this->assertSame([], $this->fetcher->calls);
+        $this->assertSame([
+            ['url' => $public, 'message' => 'Duplicate source; remove and re-add it'],
+            ['url' => GithubUrl::source(self::PRIVATE_URL)['endpoint'], 'message' => 'Duplicate source; remove and re-add it'],
+        ], $result['errors']);
+        $this->assertFalse($result['private_ok']);
+        $this->assertSame([], $result['plugins']);
+        $this->assertArrayHasKey($id, $this->state()->read()['sources']);
+    }
+
+    public function testListedKeysAreUniqueValidKeysInListingOrder(): void
+    {
+        $this->assertSame(
+            ['secret', 'alpha'],
+            DirectoryClient::listedKeys([['name' => 'Secret'], 'x', ['name' => 'Bad-Name'], ['name' => 'ALPHA'], ['name' => 'secret'], ['name' => 5]])
+        );
+    }
+
+    public function testCatalogResultIndexesPluginsByName(): void
+    {
+        $id = $this->addPrivate(self::PRIVATE_URL);
+        $this->publicListing([['name' => 'Alpha']]);
+        $this->fetcher->responses[$id] = [$this->privateEntry('Secret')];
+
+        $result = $this->client->catalogResult();
+
+        $this->assertSame(['Alpha', 'Secret'], array_keys($result['plugins']));
+        $this->assertTrue($result['private_ok']);
+        $this->assertSame(['Alpha', 'Secret'], array_keys($this->client->catalogMap()));
+    }
+
+    public function testBrowseShowsPrivateTagWithoutSourceDetails(): void
+    {
+        $id = str_repeat('e', 64);
+        $html = $this->container['template']->render('ModMenu:settings/directory', [
+            'tab' => 'browse', 'errors' => [['url' => '', 'message' => 'Foo is listed by more than one source']],
+            'is_configured' => true, 'updates' => [], 'category_counts' => ['Other' => 2],
+            'plugins' => [
+                ['name' => 'Secret', 'version' => '1.0.0', 'status' => 'available', 'category' => 'Other', 'added' => '', 'last_updated' => '',
+                    'private' => true, 'source_id' => $id, 'source_url' => self::PRIVATE_URL],
+                ['name' => 'Alpha', 'version' => '1.0.0', 'status' => 'available', 'category' => 'Other', 'added' => '', 'last_updated' => ''],
+            ],
+        ]);
+
+        $this->assertSame(1, substr_count($html, 'modmenu-badge--private'));
+        $this->assertMatchesRegularExpression('#data-name="Secret".*?<span class="modmenu-badge modmenu-badge--private">Private</span>#s', $html);
+        $this->assertStringNotContainsString($id, $html);
+        $this->assertStringNotContainsString('raw.githubusercontent.com', $html);
+        $this->assertStringContainsString('Foo is listed by more than one source', $html);
+        $this->assertStringNotContainsString('Could not load source:  —', $html);
+    }
+
+    private function addPrivate(string $url, array $seen = []): string
+    {
+        (new SourceRepository($this->container))->addPrivateSource($url, self::REF, $seen);
+        return GithubUrl::source($url)['id'];
+    }
+
+    private function privateEntry(string $name, array $extra = []): array
+    {
+        return array_replace([
+            'name' => $name,
+            'version' => '1.0.0',
+            'sha256' => str_repeat('a', 64),
+            'download' => 'https://github.com/acme/'.strtolower($name).'/releases/download/v1.0.0/'.$name.'-1.0.0.zip',
+        ], $extra);
+    }
+
+    /** One public source, PUBLIC_URL, serving $plugins. */
+    private function publicListing(array $plugins): void
+    {
+        $this->container['configModel']->save([SourceRepository::CONFIG_KEY => json_encode([self::PUBLIC_URL])]);
+        $this->container['memoryCache']->flush();
+        $this->container['modMenuDirectoryDownloader'] = new ArchiveDownloader(
+            static fn () => ['140.82.112.3'],
+            static function ($url, $address, $header, $write) use ($plugins) {
+                $write(null, json_encode($plugins));
+                return [200, null];
+            }
+        );
+    }
+
+    private function state(): PrivateState
+    {
+        return new PrivateState($this->container, $this->dir);
+    }
+
+    private function removeTree(string $path): void
+    {
+        if (is_link($path) || is_file($path)) {
+            unlink($path);
+            return;
+        }
+        if (! is_dir($path)) {
+            return;
+        }
+        chmod($path, 0700);
+        foreach (array_diff(scandir($path), ['.', '..']) as $entry) {
+            $this->removeTree($path.'/'.$entry);
+        }
+        rmdir($path);
     }
 
     public function testFetchAllReportsEachStoredHttpSourceWithoutFetchingIt()
@@ -142,7 +590,7 @@ class DirectoryClientTest extends Base
                 'url' => $url,
                 'message' => "Couldn't load this directory listing.",
             ], $urls),
-        ], $this->client->fetchAll());
+        ] + self::NO_PRIVATE, $this->client->fetchAll());
     }
 
     public function testFetchAllRejectsAnOversizedListingWhileStreaming(): void
@@ -170,7 +618,7 @@ class DirectoryClientTest extends Base
         $this->assertSame([
             'plugins' => [],
             'errors' => [['url' => $url, 'message' => 'The directory listing is larger than 5 MB.']],
-        ], $this->client->fetchAll());
+        ] + self::NO_PRIVATE, $this->client->fetchAll());
         $this->assertSame($before, glob(sys_get_temp_dir() . '/modmenu_dl*'));
     }
 

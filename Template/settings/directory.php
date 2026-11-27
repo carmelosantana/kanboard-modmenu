@@ -2,7 +2,11 @@
 <?= $this->render('ModMenu:settings/nav', ['tab' => $tab]) ?>
 
 <?php foreach ($errors as $err): ?>
+    <?php if (($err['url'] ?? '') === ''): ?>
+    <div class="modmenu-banner"><?= $this->text->e($err['message']) ?></div>
+    <?php else: ?>
     <div class="modmenu-banner"><?= t('Could not load source: %s', $this->text->e($err['url'])) ?> — <?= $this->text->e($err['message']) ?></div>
+    <?php endif ?>
 <?php endforeach ?>
 
 <?php if (! empty($updates) && $is_configured): ?>
@@ -67,6 +71,9 @@
             <strong><?= $this->text->e($cardTitle) ?></strong>
             <?php if (($p['category'] ?? '') !== ''): ?>
                 <span class="modmenu-category"><?= $this->text->e((string) $p['category']) ?></span>
+            <?php endif ?>
+            <?php if (! empty($p['private'])): ?>
+                <span class="modmenu-badge modmenu-badge--private"><?= t('Private') ?></span>
             <?php endif ?>
             <?php if ($p['status'] === 'update'): ?>
                 <span class="modmenu-badge modmenu-badge--update"><?= t('Update to %s', $this->text->e($p['version'])) ?></span>
