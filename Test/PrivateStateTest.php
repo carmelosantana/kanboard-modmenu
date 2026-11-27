@@ -25,6 +25,32 @@ class PrivateStateWriteFails extends PrivateState
     }
 }
 
+/** Injected directory-durability failures: open, fsync or close of the state directory. */
+class PrivateStateDirSyncFails extends PrivateState
+{
+    public string $fail = '';
+    public array $calls = [];
+
+    protected function openDirectory(string $dir)
+    {
+        $this->calls[] = 'open';
+        return $this->fail === 'open' ? false : parent::openDirectory($dir);
+    }
+
+    protected function syncDirectory($handle): bool
+    {
+        $this->calls[] = 'sync';
+        return $this->fail === 'sync' ? false : parent::syncDirectory($handle);
+    }
+
+    protected function closeDirectory($handle): bool
+    {
+        $this->calls[] = 'close';
+        $closed = parent::closeDirectory($handle);
+        return $this->fail === 'close' ? false : $closed;
+    }
+}
+
 class PrivateStateTest extends Base
 {
     private string $root;
@@ -209,6 +235,37 @@ class PrivateStateTest extends Base
         $this->assertTrue($state->isDamaged());
         $this->expectException(PrivateStateDamaged::class);
         $state->mutate(fn (array $doc) => $doc);
+    }
+
+    public function testStateWriteSyncsTheDirectory()
+    {
+        $state = new PrivateStateDirSyncFails($this->container, $this->dir);
+        $state->mutate(fn (array $doc) => $this->withSource($doc, 'a'));
+
+        $this->assertSame(['open', 'sync', 'close'], $state->calls);
+    }
+
+    /** @dataProvider directoryFailures */
+    public function testDirectorySyncFailureIsARecordingFailure(string $step)
+    {
+        $state = new PrivateStateDirSyncFails($this->container, $this->dir);
+        $state->fail = $step;
+
+        try {
+            $state->mutate(fn (array $doc) => $this->withSource($doc, 'a'));
+            $this->fail('a state write whose directory '.$step.' failed must not report success');
+        } catch (PrivateStateDamaged $e) {
+            $this->fail('a durability failure is not damage');
+        } catch (ModMenuException $e) {
+            $this->assertSame('ModMenu could not record its private state', $e->getMessage());
+        }
+
+        $this->assertSame([], glob($this->dir.'/.private-state.*'), 'no temp file left behind');
+    }
+
+    public static function directoryFailures(): array
+    {
+        return ['open' => ['open'], 'sync' => ['sync'], 'close' => ['close']];
     }
 
     public function testEmptyDocRoundTripsThroughDisk()

@@ -315,7 +315,8 @@ class PrivateState extends Base
 
     /**
      * Writes $json to a fresh 0600 temp file in the state directory, syncs it,
-     * renames it over the state file and syncs the directory.
+     * renames it over the state file and syncs the directory; any failed step
+     * (directory open, fsync or close included) is a recording failure.
      *
      * @throws PrivateStateDamaged|ModMenuException
      */
@@ -343,12 +344,40 @@ class PrivateState extends Base
             throw new ModMenuException(t(self::NOT_RECORDED));
         }
 
-        $dirHandle = @fopen($this->dir, 'r');
+        // The rename is durable only once the directory is synced. PHP 8.4's
+        // fsync() on a plain directory stream calls fsync(2) on Linux, so a
+        // failure here is a real one and the write is not reported as recorded.
+        $dirHandle = $this->openDirectory($this->dir);
+        $synced = $dirHandle !== false && $this->syncDirectory($dirHandle);
+        $closed = $dirHandle !== false && $this->closeDirectory($dirHandle);
 
-        if ($dirHandle !== false) {
-            @fsync($dirHandle);
-            fclose($dirHandle);
+        if (! $synced || ! $closed) {
+            throw new ModMenuException(t(self::NOT_RECORDED));
         }
+    }
+
+    /**
+     * @return resource|false
+     */
+    protected function openDirectory(string $dir)
+    {
+        return @fopen($dir, 'r');
+    }
+
+    /**
+     * @param resource $handle
+     */
+    protected function syncDirectory($handle): bool
+    {
+        return @fsync($handle);
+    }
+
+    /**
+     * @param resource $handle
+     */
+    protected function closeDirectory($handle): bool
+    {
+        return fclose($handle);
     }
 
     /**
