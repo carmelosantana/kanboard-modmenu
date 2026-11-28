@@ -30,6 +30,17 @@ class MigrationTestPluginManager extends PluginManager
     }
 }
 
+class LockOrderSpyPluginManager extends PluginManager
+{
+    public array $acquired = [];
+
+    protected function acquirePluginLock(string $name)
+    {
+        $this->acquired[] = $name;
+        return parent::acquirePluginLock($name);
+    }
+}
+
 class PluginManagerTest extends Base
 {
     private $root;
@@ -1101,6 +1112,81 @@ class PluginManagerTest extends Base
         $this->assertSame(['plugin' => 'Alpha', 'from' => '1.0.0', 'to' => '1.0.1', 'download' => 'https://x/alpha.zip'], $updates[0]);
     }
 
+    public function testUpdateFromACatalogEntryUnderAnotherSpellingIsRefused()
+    {
+        $this->seedPlugin($this->active, 'Alpha', '1.0.0');
+        $this->stubDownloads(['https://x/alpha.zip' => $this->makeZip('Alpha', '1.1.0')]);
+        $catalog = ['ALPHA' => ['version' => '1.1.0', 'download' => 'https://x/alpha.zip']];
+        $refusal = 'The directory lists this plugin as &quot;ALPHA&quot;, not &quot;Alpha&quot;. Nothing was installed.';
+
+        $this->assertSame([], $this->manager->updatesAvailable($catalog));
+        $this->assertSame(['updated' => [], 'failed' => ['Alpha' => $refusal]], $this->manager->updateAll($catalog));
+        try {
+            $this->manager->setCatalog($catalog)->installFromUrl('https://x/alpha.zip', 'Alpha');
+            $this->fail('a case variant of the catalog name must not install');
+        } catch (ModMenuException $e) {
+            $this->assertSame($refusal, $e->getMessage());
+        }
+        $this->assertSame(['Alpha' => '1.0.0'], array_column($this->manager->listInstalled(), 'version', 'name'));
+    }
+
+    public function testMigrationFindsTheSuccessorUnderAnotherSpelling()
+    {
+        $this->seedPlugin($this->active, 'ShadcnTheme', '1.3.0', ['deprecated' => ['superseded_by' => 'harbor']]);
+        $this->stubDownloads(['https://x/harbor.zip' => $this->makeZip('Harbor', '2.0.0')]);
+        $catalog = ['Harbor' => ['version' => '2.0.0', 'download' => 'https://x/harbor.zip']];
+
+        $this->assertSame('Harbor', $this->manager->migrationSuccessor('ShadcnTheme', $catalog));
+        $this->assertSame('Harbor', $this->manager->prepareMigration('ShadcnTheme', $catalog));
+        $check = $this->manager->migrationCheck('ShadcnTheme', 'Harbor', $catalog);
+        $this->assertFalse($check['blocked']);
+        $this->assertSame('Harbor', $this->manager->migrate('ShadcnTheme', $catalog, true, $check['plan_digest']));
+
+        $this->assertSame(['Harbor' => 'active', 'ShadcnTheme' => 'disabled'], array_column($this->manager->listInstalled(), 'status', 'name'));
+    }
+
+    public function testMigrationToAnInstalledSuccessorUsesItsFolderSpelling()
+    {
+        $this->seedPlugin($this->active, 'ShadcnTheme', '1.3.0', ['deprecated' => ['superseded_by' => 'HARBOR']]);
+        $this->seedPlugin($this->disabled, 'Harbor', '2.0.0');
+
+        $this->assertSame('Harbor', $this->manager->migrationSuccessor('ShadcnTheme', []));
+        $this->assertSame('Harbor', $this->manager->migrate('ShadcnTheme', [], true));
+        $this->assertSame(['Harbor' => 'active', 'ShadcnTheme' => 'disabled'], array_column($this->manager->listInstalled(), 'status', 'name'));
+    }
+
+    public function testMigrationKeepsDependentsTheSuccessorSatisfiesUnderAnotherSpelling()
+    {
+        $this->seedPlugin($this->active, 'ShadcnTheme', '1.3.0', ['deprecated' => ['superseded_by' => 'HARBOR']]);
+        $this->seedPlugin($this->disabled, 'Harbor', '2.0.0');
+        $this->seedPlugin($this->active, 'App', '1.0.0', ['requires' => [['plugin' => 'ShadcnTheme']]]);
+
+        $this->assertSame('Harbor', $this->manager->migrate('ShadcnTheme', [], true));
+
+        $this->assertSame(['App' => 'active', 'Harbor' => 'active', 'ShadcnTheme' => 'disabled'], array_column($this->manager->listInstalled(), 'status', 'name'));
+    }
+
+    public function testResolveAndActivateRefusesAMisspelledTargetBeforeItsDependencies()
+    {
+        $downloader = $this->createMock(ArchiveDownloader::class);
+        $downloader->expects($this->never())->method('download');
+        $this->manager->setArchiveDownloader($downloader);
+        $catalog = [
+            'SECRET' => ['name' => 'SECRET', 'download' => 'https://x/s.zip', 'requires' => [['plugin' => 'Helper']]],
+            'Helper' => ['name' => 'Helper', 'download' => 'https://x/h.zip'],
+        ];
+        $plan = [['plugin' => 'Helper', 'action' => 'install', 'download' => 'https://x/h.zip', 'min_version' => null]];
+
+        try {
+            $this->manager->setCatalog($catalog)->resolveAndActivate('Secret', 'install', 'https://x/s.zip', $plan);
+            $this->fail('a misspelled target must be refused');
+        } catch (ModMenuException $e) {
+            $this->assertSame('The directory lists this plugin as &quot;SECRET&quot;, not &quot;Secret&quot;. Nothing was installed.', $e->getMessage());
+        }
+
+        $this->assertSame([], $this->manager->listInstalled());
+    }
+
     public function testUpdateAllInstallsEachUpdateAndKeepsGoingPastAFailure()
     {
         $this->seedPlugin($this->active, 'Alpha', '1.0.0');
@@ -1167,9 +1253,125 @@ class PluginManagerTest extends Base
 
     private function openInstallLock(string $name = 'Harbor')
     {
-        $lock = fopen($this->root . '/.modmenu-install-' . hash('sha256', $name) . '.lock', 'c');
+        $lock = fopen($this->root . '/.modmenu-install-' . hash('sha256', strtolower($name)) . '.lock', 'c');
         $this->assertIsResource($lock);
         return $lock;
+    }
+
+    public function testFooAndfooShareOneLock(): void
+    {
+        $url = 'https://x/foo.zip';
+        $this->stubDownloads([$url => $this->makeZip('foo', '1.0.0')]);
+        $holder = (new PluginManager($this->container))->setDirectories($this->active, $this->disabled);
+        $refused = null;
+
+        $holder->withPluginLocks(['Foo'], function () use ($url, &$refused): void {
+            try {
+                $this->manager->installFromUrl($url, 'foo');
+            } catch (ModMenuException $e) {
+                $refused = $e->getMessage();
+            }
+        });
+
+        $this->assertSame('foo is busy with another ModMenu action. Try again in a moment.', $refused);
+        $this->assertDirectoryDoesNotExist($this->active . '/foo');
+        $this->assertSame('foo', $this->manager->installFromUrl($url, 'foo'));
+    }
+
+    public function testWithPluginLocksInOppositeOrdersRefusesInsteadOfDeadlocking(): void
+    {
+        $second = (new PluginManager($this->container))->setDirectories($this->active, $this->disabled);
+        $refused = null;
+
+        $result = $this->manager->withPluginLocks(['B', 'A'], function () use ($second, &$refused) {
+            try {
+                $second->withPluginLocks(['A', 'B'], fn () => $this->fail('Both sets were locked twice.'));
+            } catch (ModMenuException $e) {
+                $refused = $e->getMessage();
+            }
+            return 'held';
+        });
+
+        $this->assertSame('held', $result);
+        $this->assertSame('A is busy with another ModMenu action. Try again in a moment.', $refused);
+        $this->assertSame('free', $second->withPluginLocks(['A', 'B'], fn () => 'free'));
+    }
+
+    public function testLocksAcquiredInSortedOrder(): void
+    {
+        $spy = (new LockOrderSpyPluginManager($this->container))->setDirectories($this->active, $this->disabled);
+
+        $spy->withPluginLocks(['zeta', 'Alpha', 'mid', 'ZETA'], fn () => null);
+
+        $this->assertSame(['alpha', 'mid', 'zeta'], array_map('strtolower', $spy->acquired));
+    }
+
+    public function testPluginLocksRefuseAnInvalidName(): void
+    {
+        foreach (['bad-name', '', '../x'] as $name) {
+            try {
+                $this->manager->withPluginLocks(['Good', $name], fn () => $this->fail('Locked ' . $name));
+                $this->fail('Expected ' . $name . ' to be refused.');
+            } catch (ModMenuException $e) {
+                $this->assertSame('Invalid plugin name.', $e->getMessage());
+            }
+        }
+    }
+
+    public function testResolveAndActivateHoldsEveryPlanLock(): void
+    {
+        $this->seedPlugin($this->disabled, 'Cal', '1.1.0');
+        $this->seedPluginWithDeps($this->disabled, 'Dep', '1.0.0', [['plugin' => 'Cal', 'min_version' => '1.1.0']]);
+        $plan = [['plugin' => 'Cal', 'action' => 'enable', 'download' => null, 'min_version' => '1.1.0']];
+        $manager = (new MigrationTestPluginManager($this->container))->setDirectories($this->active, $this->disabled);
+        $refused = null;
+        $manager->beforeEnable = function (string $name) use (&$refused): void {
+            if ($name !== 'Cal') {
+                return;
+            }
+            try {
+                $this->manager->enable('Dep');
+            } catch (ModMenuException $e) {
+                $refused = $e->getMessage();
+            }
+        };
+
+        $manager->resolveAndActivate('Dep', 'enable', '', $plan);
+
+        $this->assertSame('Dep is busy with another ModMenu action. Try again in a moment.', $refused);
+        $this->assertDirectoryExists($this->active . '/Cal');
+        $this->assertDirectoryExists($this->active . '/Dep');
+    }
+
+    public function testMigrationRefusesAPlanThatGrowsAfterLocking(): void
+    {
+        $this->seedPlugin($this->active, 'ShadcnTheme', '1.3.0', ['deprecated' => ['superseded_by' => 'Harbor']]);
+        $this->seedPlugin($this->disabled, 'Harbor', '2.0.0');
+        $this->seedPlugin($this->disabled, 'Extra', '1.0.0');
+        $manager = new class ($this->container) extends PluginManager {
+            public int $checks = 0;
+
+            public function migrationCheck(string $old, string $successor, array $catalog): array
+            {
+                $check = parent::migrationCheck($old, $successor, $catalog);
+                if (++$this->checks > 1) {
+                    $check['plan'][] = ['plugin' => 'Extra', 'action' => 'enable', 'download' => null, 'min_version' => null];
+                }
+                return $check;
+            }
+        };
+        $manager->setDirectories($this->active, $this->disabled);
+        $before = $manager->installedMap();
+
+        try {
+            $manager->migrate('ShadcnTheme', [], true);
+            $this->fail('Expected the grown plan to be refused.');
+        } catch (ModMenuException $e) {
+            $this->assertSame(PluginManager::MIGRATION_PLAN_CHANGED, $e->getCode());
+            $this->assertSame(PluginManager::MIGRATION_PLAN_CHANGED_MESSAGE, $e->getMessage());
+        }
+        $this->assertSame($before, $manager->installedMap());
+        $this->assertSame('free', $this->manager->withPluginLocks(['ShadcnTheme', 'Harbor', 'Extra'], fn () => 'free'));
     }
 
     public function testDisabledInstallRefusesToProceedWhilePluginLockIsHeld()

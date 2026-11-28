@@ -15,15 +15,25 @@ class FlowTestController extends ModMenuController
 {
     public $fakeManager;
     public $fakeCatalog = [];
+    public array $fakeResult = [];
 
     protected function manager(): PluginManager
     {
         return $this->fakeManager;
     }
 
-    protected function catalog(): array
+    /** The fetch result of a public-only install with no private state, unless a test overrides fields. */
+    protected function catalogResult(): array
     {
-        return $this->fakeCatalog;
+        return array_replace([
+            'plugins' => $this->fakeCatalog,
+            'errors' => [],
+            'private_ok' => true,
+            'frozen' => false,
+            'snapshot' => ['epoch' => str_repeat('0', 32), 'generation' => 0],
+            'quarantined' => [],
+            'listed' => [],
+        ], $this->fakeResult);
     }
 }
 
@@ -770,6 +780,70 @@ class ControllerFlowTest extends Base
         $this->assertStringContainsString('Harbor conflicts with ShadcnTheme', $this->bodies[0]);
     }
 
+    // R3-01 / R4-01: the controller finds a catalog entry by key, and refuses a posted
+    // name that is not the entry's own name (R17) before any conflict or dependency step.
+
+    private const MISSPELLED = 'The directory lists this plugin as &quot;SECRET&quot;, not &quot;Secret&quot;. Nothing was installed.';
+
+    /** @dataProvider misspelledActions */
+    public function testMisspelledNameIsRefusedBeforeAnySideEffect(string $action, array $post)
+    {
+        $catalog = ['SECRET' => [
+            'name' => 'SECRET', 'download' => 'https://x/s.zip', 'conflicts' => ['Rival'], 'replaces' => ['Old'],
+            'private' => true, 'source_id' => str_repeat('a', 64), 'requires' => [['plugin' => 'Helper']],
+        ]];
+        $m = $this->manager();
+        foreach (['activeConflicts', 'disableConflicts', 'forwardCheck', 'resolveAndActivate', 'installFromUrl'] as $method) {
+            $m->expects($this->never())->method($method);
+        }
+        $this->post(['name' => 'Secret'] + $post);
+
+        $this->controller($m, $catalog)->$action();
+
+        $this->assertSame(self::MISSPELLED, $this->flashes['failure'] ?? null);
+        $this->assertSame([], $this->bodies, 'no conflict prompt or plan confirmation');
+        $this->assertStringContainsString('directory', end($this->redirects));
+    }
+
+    public static function misspelledActions(): array
+    {
+        return [
+            'install' => ['install', []],
+            'conflict confirm' => ['resolveConflict', ['action' => 'install', 'decision' => 'confirm']],
+            'conflict cancel' => ['resolveConflict', ['action' => 'install', 'decision' => 'cancel']],
+            'resolve' => ['resolve', ['action' => 'install']],
+            'update' => ['update', []],
+        ];
+    }
+
+    public function testMisspelledNameLeavesConflictsAndDependenciesAlone()
+    {
+        $manager = $this->migrationFixture();
+        $root = $this->migrationFixtureRoot;
+        mkdir($root . '/active/Rival');
+        file_put_contents($root . '/active/Rival/Plugin.php', "<?php\nnamespace Kanboard\\Plugin\\Rival;\n");
+        file_put_contents($root . '/active/Rival/plugin.json', '{"version":"1.0.0"}');
+        $downloader = $this->createMock(ArchiveDownloader::class);
+        $downloader->expects($this->never())->method('download');
+        $manager->setArchiveDownloader($downloader);
+        $catalog = [
+            'SECRET' => ['name' => 'SECRET', 'download' => 'https://x/s.zip', 'conflicts' => ['Rival'], 'requires' => [['plugin' => 'Helper']]],
+            'Helper' => ['name' => 'Helper', 'download' => 'https://x/h.zip'],
+        ];
+
+        $this->post(['name' => 'Secret', 'action' => 'install', 'decision' => 'confirm']);
+        $this->controller($manager, $catalog)->resolveConflict();
+        $this->assertSame(self::MISSPELLED, $this->flashes['failure'] ?? null);
+
+        $this->flashes = [];
+        $this->post(['name' => 'Secret', 'action' => 'install']);
+        $this->controller($manager, $catalog)->resolve();
+        $this->assertSame(self::MISSPELLED, $this->flashes['failure'] ?? null);
+
+        $this->assertSame(['Rival' => 'active', 'ShadcnTheme' => 'active'], array_column($manager->listInstalled(), 'status', 'name'));
+        $this->assertDirectoryDoesNotExist($root . '/active/Helper');
+    }
+
     public function testResolveConflictConfirmInstallPassesCatalogConflicts()
     {
         $catalog = ['Harbor' => ['download' => 'https://x/h.zip', 'conflicts' => ['BattleLobby'], 'replaces' => ['ShadcnTheme']]];
@@ -888,5 +962,45 @@ class ControllerFlowTest extends Base
         $this->controller($m, $catalog)->install();
 
         $this->assertStringContainsString('Plugin installed.', $this->flashes['success']);
+    }
+
+    // ── freshness guard on every catalog mutation ──────────────────────────
+
+    /** @dataProvider guardedActions */
+    public function testCatalogMutationsRefuseBeforeActingWhenTheGuardCannotStart(string $action, array $post, array $result, string $message)
+    {
+        $catalog = ['Alpha' => ['download' => 'https://x/alpha.zip', 'requires' => []]];
+        $m = $this->manager();
+        foreach (['installFromUrl', 'updateAll', 'resolveAndActivate', 'migrate', 'disableConflicts', 'prepareMigration', 'enable'] as $method) {
+            $m->expects($this->never())->method($method);
+        }
+        $m->method('activeConflicts')->willReturn([]);
+        $m->method('forwardCheck')->willReturn(['satisfied' => true, 'blocked' => false, 'plan' => []]);
+        $m->method('migrationSuccessor')->willReturn('Alpha');
+        $this->post($post);
+        $controller = $this->controller($m, $catalog);
+        $controller->fakeResult = $result;
+
+        $controller->$action();
+
+        $this->assertSame(['failure' => $message], $this->flashes);
+        $this->assertSame([], $this->bodies);
+    }
+
+    public static function guardedActions(): array
+    {
+        $down = [['private_ok' => false], 'Private sources must be reachable to change plugins'];
+        $frozen = [['frozen' => true, 'private_ok' => false, 'snapshot' => ['epoch' => null, 'generation' => null]], "ModMenu's private source state is damaged"];
+        $cases = [];
+        foreach (['down' => $down, 'frozen' => $frozen] as $why => [$result, $message]) {
+            $cases["install $why"] = ['install', ['name' => 'Alpha'], $result, e($message)];
+            $cases["update $why"] = ['update', ['name' => 'Alpha'], $result, e($message)];
+            $cases["update all $why"] = ['updateAll', [], $result, e($message)];
+            $cases["resolve $why"] = ['resolve', ['name' => 'Alpha', 'action' => 'install'], $result, e($message)];
+            $cases["resolve enable $why"] = ['resolve', ['name' => 'Alpha', 'action' => 'enable'], $result, e($message)];
+            $cases["migrate $why"] = ['runMigrate', ['name' => 'Old', 'plan_digest' => str_repeat('a', 64)], $result, e($message)];
+            $cases["conflict install $why"] = ['resolveConflict', ['name' => 'Alpha', 'action' => 'install', 'decision' => 'confirm'], $result, e($message)];
+        }
+        return $cases;
     }
 }

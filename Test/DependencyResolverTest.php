@@ -369,4 +369,122 @@ class DependencyResolverTest extends Base
         sort($plugins);
         $this->assertSame(['A', 'B'], $plugins, 'each node appears exactly once, no infinite recursion');
     }
+    // ---- private source restriction ----
+    private const SOURCE_A = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    private const SOURCE_B = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+
+    private function privateEntry(string $source, array $extra = []): array
+    {
+        return ['version' => '1.0.0', 'download' => 'https://x/p.zip', 'private' => true, 'source_id' => $source] + $extra;
+    }
+
+    public function testPrivateDependantResolvesOnlyFromItsOwnSource()
+    {
+        $catalog = [
+            'Public' => ['version' => '1.0.0', 'download' => 'https://x/public.zip'],
+            'Other' => $this->privateEntry(self::SOURCE_B),
+            'Mine' => $this->privateEntry(self::SOURCE_A),
+        ];
+        $plan = $this->resolver->resolveClosure([$this->dep('Public'), $this->dep('Other'), $this->dep('Mine')], [], $catalog, self::SOURCE_A);
+
+        $this->assertSame([
+            ['plugin' => 'Public', 'action' => 'unresolvable', 'download' => null, 'min_version' => null, 'reason' => 'Install it yourself first'],
+            ['plugin' => 'Other', 'action' => 'unresolvable', 'download' => null, 'min_version' => null, 'reason' => 'Install it yourself first'],
+            ['plugin' => 'Mine', 'action' => 'install', 'download' => 'https://x/p.zip', 'min_version' => null],
+        ], $plan);
+
+        $forward = $this->resolver->resolveForward([$this->dep('Public')], 'requires', [], $catalog, self::SOURCE_A);
+        $this->assertSame('unresolvable', $forward['deps'][0]['action']);
+        $this->assertNull($forward['deps'][0]['download']);
+    }
+
+    public function testInstalledPluginSatisfiesAPrivateDependant()
+    {
+        $map = ['Public' => ['version' => '2.0.0', 'status' => 'active']];
+        $catalog = ['Public' => ['version' => '3.0.0', 'download' => 'https://x/public.zip']];
+
+        $this->assertSame([], $this->resolver->resolveClosure([$this->dep('Public', '1.0.0')], $map, $catalog, self::SOURCE_A));
+        $this->assertTrue($this->resolver->resolveForward([$this->dep('Public')], 'requires', $map, $catalog, self::SOURCE_A)['satisfied']);
+    }
+
+    public function testPrivateDependencyRestrictsItsOwnRequirementsToItsSource()
+    {
+        $catalog = [
+            'Mine' => $this->privateEntry(self::SOURCE_A, ['requires' => [['plugin' => 'Helper']]]),
+            'Helper' => ['version' => '1.0.0', 'download' => 'https://x/helper.zip'],
+        ];
+        $plan = $this->resolver->resolveClosure([$this->dep('Mine')], [], $catalog);
+
+        $this->assertSame(['Helper', 'Mine'], array_column($plan, 'plugin'));
+        $this->assertSame(['unresolvable', 'install'], array_column($plan, 'action'));
+        $this->assertSame('Install it yourself first', $plan[0]['reason']);
+    }
+    public function testVerdictDoesNotDependOnRequirementOrder()
+    {
+        $catalog = [
+            'Helper' => ['version' => '1.0.0', 'download' => 'https://x/helper.zip'],
+            'Mine' => $this->privateEntry(self::SOURCE_A, ['requires' => [['plugin' => 'Helper']]]),
+        ];
+        $verdict = function (array $requires) use ($catalog): array {
+            $out = [];
+            foreach ($this->resolver->resolveClosure($requires, [], $catalog) as $step) {
+                $out[$step['plugin']] = $step['action'];
+            }
+            ksort($out);
+            return $out;
+        };
+
+        $expected = ['Helper' => 'unresolvable', 'Mine' => 'install'];
+        $this->assertSame($expected, $verdict([$this->dep('Helper'), $this->dep('Mine')]));
+        $this->assertSame($expected, $verdict([$this->dep('Mine'), $this->dep('Helper')]));
+    }
+
+    public function testPrivateEntryWithoutAValidSourceIdResolvesNothing()
+    {
+        $catalog = [
+            'Mine' => ['version' => '1.0.0', 'download' => 'https://x/p.zip', 'private' => true, 'requires' => [['plugin' => 'Helper']]],
+            'Helper' => ['version' => '1.0.0', 'download' => 'https://x/helper.zip'],
+        ];
+        $plan = $this->resolver->resolveClosure([$this->dep('Mine')], [], $catalog);
+
+        $this->assertSame('unresolvable', $plan[0]['action']);
+        $this->assertSame('Helper', $plan[0]['plugin']);
+    }
+
+    // ---- one case-insensitive identity (PluginName::key) ----
+    public function testMixedCaseDependencyIsSatisfiedByInstalledFolder()
+    {
+        $map = ['RpcGuard' => ['version' => '1.2.0', 'status' => 'active']];
+
+        $this->assertTrue(DependencyResolver::isSatisfied($this->dep('rpcguard', '1.0.0'), $map));
+        $this->assertSame([], $this->resolver->resolveClosure([$this->dep('rpcguard')], $map, [], self::SOURCE_A));
+        $forward = $this->resolver->resolveForward([$this->dep('RPCGUARD')], 'requires', $map, []);
+        $this->assertTrue($forward['satisfied']);
+        $this->assertSame('RpcGuard', $forward['deps'][0]['plugin'], 'the folder name is kept for display');
+    }
+
+    public function testMixedCaseSameSourceCatalogEntryIsFound()
+    {
+        $catalog = [
+            'Mine' => $this->privateEntry(self::SOURCE_A, ['requires' => [['plugin' => 'rpcguard']]]),
+            'RpcGuard' => ['download' => 'https://x/rpcguard.zip'] + $this->privateEntry(self::SOURCE_A),
+        ];
+        $plan = $this->resolver->resolveClosure([$this->dep('Mine')], [], $catalog);
+
+        $this->assertSame([
+            ['plugin' => 'RpcGuard', 'action' => 'install', 'download' => 'https://x/rpcguard.zip', 'min_version' => null],
+            ['plugin' => 'Mine', 'action' => 'install', 'download' => 'https://x/p.zip', 'min_version' => null],
+        ], $plan);
+    }
+
+    public function testMixedCaseRequirementBlocksRemovalOfInstalledFolder()
+    {
+        $map = [
+            'RpcGuard' => ['version' => '1.0.0', 'status' => 'active'],
+            'App' => ['version' => '1.0.0', 'status' => 'active'],
+        ];
+        $deps = ['App' => ['status' => 'active', 'requires' => [$this->dep('rpcguard')]]];
+
+        $this->assertSame([['plugin' => 'App', 'min_version' => null]], $this->resolver->resolveReverse('RpcGuard', $deps, $map));
+    }
 }

@@ -62,6 +62,12 @@ class Plugin extends Base
         $this->route->addRoute('config/modmenu/sources', 'ModMenuController', 'sources', 'ModMenu');
         $this->route->addRoute('config/modmenu/source/add', 'ModMenuController', 'addSource', 'ModMenu');
         $this->route->addRoute('config/modmenu/source/remove', 'ModMenuController', 'removeSource', 'ModMenu');
+        $this->route->addRoute('config/modmenu/source/private/add', 'ModMenuController', 'addPrivateSource', 'ModMenu');
+        $this->route->addRoute('config/modmenu/source/private/remove', 'ModMenuController', 'removePrivateSource', 'ModMenu');
+        $this->route->addRoute('config/modmenu/private/adopt', 'ModMenuController', 'adopt', 'ModMenu');
+        $this->route->addRoute('config/modmenu/private/unbind', 'ModMenuController', 'unbind', 'ModMenu');
+        $this->route->addRoute('config/modmenu/private/dismiss', 'ModMenuController', 'dismiss', 'ModMenu');
+        $this->route->addRoute('config/modmenu/private/reset', 'ModMenuController', 'resetPrivateState', 'ModMenu');
         $this->route->addRoute('config/modmenu/plugin/confirm', 'ModMenuController', 'confirm', 'ModMenu');
         $this->route->addRoute('config/modmenu/plugin/migrate', 'ModMenuController', 'migrate', 'ModMenu');
         $this->route->addRoute('config/modmenu/plugin/migrate/run', 'ModMenuController', 'runMigrate', 'ModMenu');
@@ -93,7 +99,7 @@ class Plugin extends Base
 
     public function getPluginVersion(): string
     {
-        return '1.6.0';
+        return '1.7.0';
     }
 
     public function getCompatibleVersion(): string

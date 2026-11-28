@@ -55,4 +55,18 @@ class ControllerAccessTest extends Base
         $this->expectException(AccessForbiddenException::class);
         $this->nonAdminController()->resolve();
     }
+
+    /** @dataProvider privateActions */
+    #[\PHPUnit\Framework\Attributes\DataProvider('privateActions')]
+    public function testPrivateSourceActionsForbiddenForNonAdmin(string $action)
+    {
+        $this->expectException(AccessForbiddenException::class);
+        $this->nonAdminController()->$action();
+    }
+
+    public static function privateActions(): array
+    {
+        $actions = ['addPrivateSource', 'removePrivateSource', 'adopt', 'unbind', 'dismiss', 'resetPrivateState'];
+        return array_combine($actions, array_map(static fn ($a) => [$a], $actions));
+    }
 }

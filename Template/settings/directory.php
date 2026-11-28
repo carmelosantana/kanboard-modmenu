@@ -1,8 +1,18 @@
 <div class="page-header"><h2><?= t('ModMenu') ?></h2></div>
 <?= $this->render('ModMenu:settings/nav', ['tab' => $tab]) ?>
 
+<?php if (! empty($frozen)): ?>
+    <?= $this->render('ModMenu:settings/frozen') ?>
+<?php elseif (isset($private_ok) && ! $private_ok): ?>
+    <div class="modmenu-banner" role="alert"><?= e('Private sources must be reachable to change plugins') ?>. <?= t('Installs and updates are refused until every private source loads; see the errors below.') ?></div>
+<?php endif ?>
+
 <?php foreach ($errors as $err): ?>
+    <?php if (($err['url'] ?? '') === ''): ?>
+    <div class="modmenu-banner"><?= $this->text->e($err['message']) ?></div>
+    <?php else: ?>
     <div class="modmenu-banner"><?= t('Could not load source: %s', $this->text->e($err['url'])) ?> — <?= $this->text->e($err['message']) ?></div>
+    <?php endif ?>
 <?php endforeach ?>
 
 <?php if (! empty($updates) && $is_configured): ?>
@@ -67,6 +77,9 @@
             <strong><?= $this->text->e($cardTitle) ?></strong>
             <?php if (($p['category'] ?? '') !== ''): ?>
                 <span class="modmenu-category"><?= $this->text->e((string) $p['category']) ?></span>
+            <?php endif ?>
+            <?php if (! empty($p['private'])): ?>
+                <span class="modmenu-badge modmenu-badge--private"><?= t('Private') ?></span>
             <?php endif ?>
             <?php if ($p['status'] === 'update'): ?>
                 <span class="modmenu-badge modmenu-badge--update"><?= t('Update to %s', $this->text->e($p['version'])) ?></span>

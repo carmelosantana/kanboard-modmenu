@@ -6,10 +6,18 @@ use Kanboard\Controller\BaseController;
 use Kanboard\Core\Controller\AccessForbiddenException;
 use Kanboard\Plugin\ModMenu\Model\PluginManager;
 use Kanboard\Plugin\ModMenu\Model\PluginSwap;
+use Kanboard\Plugin\ModMenu\Model\ArchiveDownloader;
 use Kanboard\Plugin\ModMenu\Model\DirectoryClient;
 use Kanboard\Plugin\ModMenu\Model\SourceRepository;
 use Kanboard\Plugin\ModMenu\Model\DependencyResolver;
+use Kanboard\Plugin\ModMenu\Model\CatalogLock;
+use Kanboard\Plugin\ModMenu\Model\GithubUrl;
+use Kanboard\Plugin\ModMenu\Model\MutationGuard;
+use Kanboard\Plugin\ModMenu\Model\PluginName;
+use Kanboard\Plugin\ModMenu\Model\PrivateFetcher;
+use Kanboard\Plugin\ModMenu\Model\PrivateState;
 use Kanboard\Plugin\ModMenu\Exception\ModMenuException;
+use Kanboard\Plugin\ModMenu\Exception\PrivateStateDamaged;
 
 /**
  * Admin-only plugin-manager UI. Thin: delegates all work to the models and
@@ -96,19 +104,128 @@ class ModMenuController extends BaseController
             'errors' => $result['errors'],
             'updates' => $updates,
             'is_configured' => $manager->isConfigured(),
+            'frozen' => $result['frozen'],
+            'private_ok' => $result['private_ok'],
         ]));
     }
 
     public function sources()
     {
         $this->requireAdmin();
+        $repository = new SourceRepository($this->container);
+        $state = $this->privateState();
+        $private = ['private_sources' => [], 'removed_sources' => []];
+        $frozen = $state->isDamaged();
+        if (! $frozen) {
+            try {
+                // The state can be damaged between the check and this read.
+                $private = $this->privateRows($state->read(), $repository);
+            } catch (PrivateStateDamaged $e) {
+                $frozen = true;
+            }
+        }
 
         $this->response->html($this->helper->layout->config('ModMenu:settings/sources', [
             'title' => t('ModMenu'),
             'tab' => 'sources',
-            'sources' => (new SourceRepository($this->container))->getSources(),
+            'sources' => $repository->getSources(),
             'default_source' => SourceRepository::DEFAULT_SOURCE,
-        ]));
+            'frozen' => $frozen,
+        ] + $private));
+    }
+
+    protected function privateState(): PrivateState
+    {
+        return new PrivateState($this->container);
+    }
+
+    /**
+     * The private part of the sources page, from the local state only (no
+     * Vault read): each source with its Vault status, bound plugins and
+     * installed unbound plugins it lists; removed sources that still have
+     * bindings.
+     */
+    private function privateRows(array $doc, SourceRepository $repository): array
+    {
+        $installed = $this->manager()->installedKeys();
+        $boundTo = [];
+        foreach ($doc['bindings'] as $key => $id) {
+            $boundTo[$id][] = self::installedName((string) $key, $installed);
+        }
+
+        $sources = [];
+        $candidates = [];
+        foreach ($doc['sources'] as $id => $source) {
+            $unbound = [];
+            foreach ($doc['seen'][$id] ?? [] as $key) {
+                if (isset($installed[$key]) && count($installed[$key]) === 1 && ! isset($doc['bindings'][$key])) {
+                    $unbound[] = [
+                        'name' => $installed[$key][0],
+                        'key' => $key,
+                        'dismissed' => in_array($key, $doc['dismissed'][$id] ?? [], true),
+                    ];
+                    $candidates[] = $key;
+                }
+            }
+            $sources[] = [
+                'id' => (string) $id,
+                'url' => $source['url'],
+                'token_ref' => $source['token_ref'],
+                'vault' => $this->privateFetcher()->describe($source['token_ref']),
+                'bound' => $boundTo[$id] ?? [],
+                'unbound' => $unbound,
+            ];
+        }
+
+        $publicListers = $candidates === [] ? [] : $this->publicListers($repository);
+        foreach ($sources as &$source) {
+            foreach ($source['unbound'] as &$plugin) {
+                $plugin['also_listed_by'] = $publicListers[$plugin['key']] ?? [];
+            }
+            unset($plugin);
+        }
+        unset($source);
+
+        $removed = [];
+        foreach ($doc['removed'] as $id => $url) {
+            if (! empty($boundTo[$id])) {
+                $removed[] = ['url' => $url, 'bound' => $boundTo[$id]];
+            }
+        }
+
+        return ['private_sources' => $sources, 'removed_sources' => $removed];
+    }
+
+    /** The installed folder name for a key, or the key when nothing is installed under it. */
+    private static function installedName(string $key, array $installed): string
+    {
+        return $installed[$key][0] ?? $key;
+    }
+
+    /**
+     * Which public sources list each plugin key, for the "also listed by"
+     * warning. Best effort: a source that fails to load is skipped.
+     *
+     * @return array<string, string[]>
+     */
+    private function publicListers(SourceRepository $repository): array
+    {
+        $downloader = $this->container['modMenuDirectoryDownloader'] ?? new ArchiveDownloader();
+        $listers = [];
+        foreach ($repository->getSources() as $url) {
+            if (! SourceRepository::isSecureUrl($url)) {
+                continue;
+            }
+            try {
+                $keys = DirectoryClient::listedKeys($downloader->fetchJson($url));
+            } catch (\Throwable $e) {
+                continue;
+            }
+            foreach ($keys as $key) {
+                $listers[$key][] = $url;
+            }
+        }
+        return $listers;
     }
 
     public function addSource()
@@ -116,22 +233,152 @@ class ModMenuController extends BaseController
         $this->requireAdmin();
         $this->checkCSRFForm();
         $url = $this->postValue('url');
-        try {
-            (new SourceRepository($this->container))->addSource($url);
-            $this->flash->success(t('Source added.'));
-        } catch (ModMenuException $e) {
-            $this->flash->failure($e->getMessage());
-        }
-        $this->response->redirect($this->helper->url->to('ModMenuController', 'sources', ['plugin' => 'ModMenu']));
+        $this->changeSources(fn (SourceRepository $r) => $r->addSource($url), t('Source added.'));
     }
 
     public function removeSource()
     {
         $this->requireAdmin();
         $this->checkCSRFForm();
-        (new SourceRepository($this->container))->removeSource($this->postValue('url'));
-        $this->flash->success(t('Source removed.'));
-        $this->response->redirect($this->helper->url->to('ModMenuController', 'sources', ['plugin' => 'ModMenu']));
+        $url = $this->postValue('url');
+        $this->changeSources(fn (SourceRepository $r) => $r->removeSource($url), t('Source removed.'));
+    }
+
+    /**
+     * Add a private source: its first fetch must succeed (that fetch's plugin
+     * names are recorded with it). The URL and ref are checked before Vault
+     * is asked for the token.
+     */
+    public function addPrivateSource()
+    {
+        $this->requireAdmin();
+        $this->checkCSRFForm();
+        $url = trim($this->postValue('url'));
+        $ref = trim($this->postValue('token_ref'));
+
+        $this->changeSources(function (SourceRepository $repository) use ($url, $ref): void {
+            $source = GithubUrl::source($url);
+            if ($source === null) {
+                throw new ModMenuException(t(SourceRepository::NOT_A_PRIVATE_URL));
+            }
+            if (! PrivateState::isTokenRef($ref)) {
+                throw new ModMenuException(t(SourceRepository::NOT_A_TOKEN_REF));
+            }
+            if ((new PrivateState($this->container))->isDamaged()) {
+                throw new PrivateStateDamaged();
+            }
+            $repository->refuseKnownSource($source['id']);
+            try {
+                $plugins = $this->privateFetcher()->fetchDirectory(['id' => $source['id'], 'url' => $source['endpoint'], 'token_ref' => $ref]);
+            } catch (ModMenuException $e) {
+                throw $e;
+            } catch (\Throwable $e) {
+                throw new ModMenuException(e("Couldn't load this private source."));
+            }
+            $repository->addPrivateSource($url, $ref, DirectoryClient::listedKeys($plugins));
+        }, t('Private source added.'));
+    }
+
+    /** Remove a private source. Needs no fetch, so it works while the source is down. */
+    public function removePrivateSource()
+    {
+        $this->requireAdmin();
+        $this->checkCSRFForm();
+        $id = $this->postValue('id');
+        $this->changeSources(fn (SourceRepository $r) => $r->removePrivateSource($id), t('Private source removed.'));
+    }
+
+    /** Runs a source-list change, flashes its outcome and returns to the sources page. */
+    private function changeSources(callable $change, string $successMessage): void
+    {
+        try {
+            $change(new SourceRepository($this->container));
+            $this->flash->success($successMessage);
+        } catch (ModMenuException $e) {
+            $this->flash->failure($e->getMessage());
+        }
+        $this->backToSources();
+    }
+
+    /** Bind an installed plugin to a private source that lists it (fetched in this request). */
+    public function adopt()
+    {
+        $this->requireAdmin();
+        $this->checkCSRFForm();
+        $name = $this->postValue('name');
+        $sourceId = $this->postValue('source_id');
+        $this->runAndFlash(
+            fn (PluginManager $m) => $m->adopt($name, $sourceId, $this->catalogResult()),
+            t('%s adopted.', $name)
+        );
+        $this->backToSources();
+    }
+
+    /** Drop a plugin's binding. Needs no fetch. */
+    public function unbind()
+    {
+        $this->requireAdmin();
+        $this->checkCSRFForm();
+        $name = $this->postValue('name');
+        $this->runAndFlash(fn (PluginManager $m) => $m->unbind($name), t('%s unbound.', $name));
+        $this->backToSources();
+    }
+
+    /** Let public sources update a plugin a private source lists (fetched in this request). */
+    public function dismiss()
+    {
+        $this->requireAdmin();
+        $this->checkCSRFForm();
+        $name = $this->postValue('name');
+        $sourceId = $this->postValue('source_id');
+        $this->runAndFlash(
+            fn (PluginManager $m) => $m->dismiss($name, $sourceId, $this->catalogResult()),
+            t('%s dismissed for this source.', $name)
+        );
+        $this->backToSources();
+    }
+
+    /**
+     * GET: what a reset drops. POST: under the exclusive catalog lock, move
+     * the state file aside and start an empty one with a new epoch.
+     */
+    public function resetPrivateState()
+    {
+        $this->requireAdmin();
+        $state = $this->privateState();
+
+        if (! $this->request->isPost()) {
+            // A damaged file is never read into the page: the reset drops whatever it holds.
+            $doc = null;
+            if (! $state->isDamaged()) {
+                try {
+                    // The state can be damaged between the check and this read.
+                    $doc = $state->read();
+                } catch (PrivateStateDamaged $e) {
+                }
+            }
+            $installed = $doc === null ? [] : $this->manager()->installedKeys();
+            $this->response->html($this->helper->layout->config('ModMenu:settings/reset', [
+                'title' => t('ModMenu'),
+                'tab' => 'sources',
+                'frozen' => $doc === null,
+                'urls' => $doc === null ? [] : array_merge(array_column($doc['sources'], 'url'), array_values($doc['removed'])),
+                'bound' => $doc === null ? [] : array_map(
+                    static fn ($key) => self::installedName((string) $key, $installed),
+                    array_keys($doc['bindings'])
+                ),
+            ]));
+            return;
+        }
+
+        $this->checkCSRFForm();
+        try {
+            (new CatalogLock(PrivateState::defaultDir($this->container)))->exclusive(static fn () => $state->reset());
+            $this->flash->success(t('Private state reset.'));
+        } catch (ModMenuException $e) {
+            $this->flash->failure($e->getMessage());
+        }
+        $this->backToSources();
     }
 
     public function confirm()
@@ -153,8 +400,8 @@ class ModMenuController extends BaseController
         $name = $this->request->getStringParam('name');
         $manager = $this->manager();
         try {
-            $successor = $manager->migrationSuccessor($name);
             $catalog = $this->catalog();
+            $successor = $manager->migrationSuccessor($name, $catalog);
             $this->renderMigrationConfirmation($name, $successor, $catalog, $manager->migrationCheck($name, $successor, $catalog));
         } catch (ModMenuException $e) {
             $this->flash->failure($e->getMessage());
@@ -167,7 +414,7 @@ class ModMenuController extends BaseController
         $blockedReason = null;
         if ($check['self_update']) {
             $blockedReason = e(PluginManager::MIGRATION_SELF_UPDATE_MESSAGE);
-        } elseif ($check['install'] && empty($catalog[$successor]['download'])) {
+        } elseif ($check['install'] && empty(self::catalogEntry($catalog, $successor)['download'])) {
             $blockedReason = t('%s is not in the plugin directory, so nothing changed.', $successor);
         } elseif ($check['blocked']) {
             $blockedReason = t('"%s" has requirements that cannot be installed automatically. Install them manually first.', $successor);
@@ -194,8 +441,8 @@ class ModMenuController extends BaseController
         $manager = $this->manager();
 
         try {
-            $successor = $manager->migrationSuccessor($name);
-            $catalog = $this->catalog();
+            [$catalog, $guard] = $this->guardedCatalog();
+            $successor = $manager->migrationSuccessor($name, $catalog);
             $check = $manager->migrationCheck($name, $successor, $catalog);
             if ($check['self_update']) {
                 throw new ModMenuException(e(PluginManager::MIGRATION_SELF_UPDATE_MESSAGE));
@@ -219,12 +466,12 @@ class ModMenuController extends BaseController
             }
 
             try {
-                $successor = $manager->migrate($name, $catalog, $dependenciesConfirmed, $digest);
+                $successor = $manager->migrate($name, $catalog, $dependenciesConfirmed, $digest, $guard);
             } catch (ModMenuException $e) {
                 if ($e->getCode() !== PluginManager::MIGRATION_PLAN_CHANGED) {
                     throw $e;
                 }
-                $successor = $manager->migrationSuccessor($name);
+                $successor = $manager->migrationSuccessor($name, $catalog);
                 $this->flash->failure($e->getMessage());
                 $this->renderMigrationConfirmation($name, $successor, $catalog, $manager->migrationCheck($name, $successor, $catalog));
                 return;
@@ -273,17 +520,28 @@ class ModMenuController extends BaseController
         // Legacy path: an install form that posts only archive_url (no name) can't
         // pre-flight deps — install directly, unchanged behavior.
         if ($name === '') {
-            $this->runAndFlash(fn (PluginManager $m) => $m->installFromUrl($target), t('Plugin installed.'), '', true);
+            $this->runAndFlash(function (PluginManager $m) use ($target) {
+                $guard = MutationGuard::forUnlistedInstall($this->container, fn () => $this->catalogResult());
+                $guard->assertCanStart();
+                return $m->setCatalog([], $guard)->installFromUrl($target);
+            }, t('Plugin installed.'), '', true);
             $this->backToDirectory();
             return;
         }
-        $catalog = $this->catalog();
-        $entry = $catalog[$name] ?? [];
+        $guarded = $this->guardedCatalogOrRefuse(true);
+        if ($guarded === null) {
+            return;
+        }
+        [$catalog, $guard] = $guarded;
+        if ($this->refuseMisspelled($catalog, $name)) {
+            return;
+        }
+        $entry = self::catalogEntry($catalog, $name);
         if ($this->promptOnConflict($name, 'install', $entry['conflicts'] ?? [], $entry['replaces'] ?? [])) {
             return;
         }
         // A named install always takes its download from the catalog.
-        $this->forwardOrConfirm($name, 'install', '', $catalog);
+        $this->forwardOrConfirm($name, 'install', '', $catalog, '', $guard);
     }
 
     /**
@@ -298,9 +556,19 @@ class ModMenuController extends BaseController
         $name    = $this->postValue('name');
         $action  = $this->postValue('action') === 'install' ? 'install' : 'enable';
         $manager = $this->manager();
-        $catalog = $action === 'install' ? $this->catalog() : [];
-        $declared = $catalog[$name]['conflicts'] ?? [];
-        $replaces = $catalog[$name]['replaces'] ?? [];
+        $catalog = [];
+        $guard = null;
+        if ($action === 'install') {
+            $result = $this->catalogResult();
+            $catalog = $result['plugins'];
+            $guard = new MutationGuard($this->container, $result);
+            if ($this->refuseMisspelled($catalog, $name)) {
+                return;
+            }
+        }
+        $entry    = self::catalogEntry($catalog, $name);
+        $declared = $entry['conflicts'] ?? [];
+        $replaces = $entry['replaces'] ?? [];
 
         if ($this->postValue('decision') !== 'confirm') {
             $conflicts = $manager->activeConflicts($name, $declared, $replaces);
@@ -310,6 +578,7 @@ class ModMenuController extends BaseController
         }
 
         try {
+            $guard?->assertCanStart();
             $disabled = $manager->disableConflicts($name, $declared, $replaces);
         } catch (ModMenuException $e) {
             $this->flash->failure($e->getMessage());
@@ -318,7 +587,7 @@ class ModMenuController extends BaseController
         }
 
         $notice = $disabled === [] ? '' : t('Disabled %s.', implode(', ', $disabled));
-        $this->forwardOrConfirm($name, $action, '', $action === 'install' ? $catalog : null, $notice);
+        $this->forwardOrConfirm($name, $action, '', $action === 'install' ? $catalog : null, $notice, $guard);
     }
 
     /**
@@ -329,7 +598,18 @@ class ModMenuController extends BaseController
     {
         $this->requireAdmin();
         $this->checkCSRFForm();
-        $result  = $this->manager()->updateAll($this->catalog());
+        $guarded = $this->guardedCatalogOrRefuse(true);
+        if ($guarded === null) {
+            return;
+        }
+        [$catalog, $guard] = $guarded;
+        try {
+            $result = $this->manager()->updateAll($catalog, $guard);
+        } catch (ModMenuException $e) {
+            $this->flash->failure($e->getMessage());
+            $this->backToDirectory();
+            return;
+        }
         $updated = $result['updated'];
 
         $parts = [];
@@ -372,14 +652,21 @@ class ModMenuController extends BaseController
         $action = $this->postValue('action') === 'install' ? 'install' : 'enable';
 
         // Re-derive the plan + URLs server-side from a fresh catalog — never trust the post.
+        $guarded = $this->guardedCatalogOrRefuse($action === 'install');
+        if ($guarded === null) {
+            return;
+        }
+        [$catalog, $guard] = $guarded;
+        if ($action === 'install' && $this->refuseMisspelled($catalog, $name)) {
+            return;
+        }
         $manager  = $this->manager();
-        $catalog  = $this->catalog();
         $requires = $this->requiresFor($name, $action, $catalog, $manager);
-        $check    = $manager->forwardCheck($requires, $catalog);
-        $target   = $action === 'install' ? (string) ($catalog[$name]['download'] ?? '') : '';
+        $check    = $manager->forwardCheck($requires, $catalog, null, $this->dependencySource($name, $action, $catalog));
+        $entry    = $action === 'install' ? self::catalogEntry($catalog, $name) : [];
+        $target   = (string) ($entry['download'] ?? '');
 
         // The conflict prompt must not be bypassable by posting here directly.
-        $entry = $action === 'install' ? ($catalog[$name] ?? []) : [];
         $conflicts = $manager->activeConflicts($name, $entry['conflicts'] ?? [], $entry['replaces'] ?? []);
         if ($conflicts !== []) {
             $this->flash->failure(t('%s conflicts with %s. Disable them first.', $name, implode(', ', $conflicts)));
@@ -391,14 +678,14 @@ class ModMenuController extends BaseController
         // submit (TOCTOU): if a requirement is no longer auto-resolvable, refuse
         // rather than run a plan that resolveAndActivate would abort on anyway.
         if ($check['blocked']) {
-            $this->flash->failure(t('"%s" has requirements that can no longer be installed automatically. Install them manually first.', $name));
+            $this->flash->failure(t('"%s" has requirements that can no longer be installed automatically. Install them manually first.', $name) . self::unresolvableNote($check['plan']));
             $action === 'install' ? $this->backToDirectory() : $this->backToInstalled();
             return;
         }
 
         $this->runAndFlash(
-            function (PluginManager $m) use ($name, $action, $target, $check, $catalog) {
-                $m->setCatalog($catalog);
+            function (PluginManager $m) use ($name, $action, $target, $check, $catalog, $guard) {
+                $m->setCatalog($catalog, $guard);
                 $m->resolveAndActivate($name, $action, $target, $check['plan']);
             },
             $action === 'install' ? t('Plugin and its dependencies installed.') : t('Plugin and its dependencies enabled.'),
@@ -412,8 +699,15 @@ class ModMenuController extends BaseController
         $this->requireAdmin();
         $this->checkCSRFForm();
         $expected = $this->postValue('name');
-        $catalog = $this->catalog();
-        $url = (string) ($catalog[$expected]['download'] ?? '');
+        $guarded = $this->guardedCatalogOrRefuse(true);
+        if ($guarded === null) {
+            return;
+        }
+        [$catalog, $guard] = $guarded;
+        if ($this->refuseMisspelled($catalog, $expected)) {
+            return;
+        }
+        $url = (string) (self::catalogEntry($catalog, $expected)['download'] ?? '');
         if ($expected === '' || $url === '') {
             $this->flash->failure(t('This plugin is not in the directory.'));
             $this->backToDirectory();
@@ -421,7 +715,7 @@ class ModMenuController extends BaseController
         }
         $manager = $this->manager();
         try {
-            $manager->setCatalog($catalog);
+            $manager->setCatalog($catalog, $guard);
             $name = $manager->installFromUrl($url, $expected);
         } catch (ModMenuException $e) {
             $this->flash->failure($e->getMessage());
@@ -445,15 +739,108 @@ class ModMenuController extends BaseController
 
     // ── dependency helpers ──────────────────────────────────────────────────
 
+    /** One fetch of every source with its freshness fields (DirectoryClient::catalogResult()). */
+    protected function catalogResult(): array
+    {
+        return (new DirectoryClient($this->container))->catalogResult();
+    }
+
+    /** The catalog for read-only pages. */
     protected function catalog(): array
     {
-        return (new DirectoryClient($this->container))->catalogMap();
+        return $this->catalogResult()['plugins'];
+    }
+
+    /**
+     * The catalog and guard for one catalog mutation, from one fetch.
+     *
+     * @return array{0: array, 1: MutationGuard}
+     * @throws ModMenuException when the guard refuses to start
+     */
+    private function guardedCatalog(): array
+    {
+        $result = $this->catalogResult();
+        $guard = new MutationGuard($this->container, $result);
+        $guard->assertCanStart();
+        return [$result['plugins'], $guard];
+    }
+
+    /** guardedCatalog(), or null after flashing the refusal and redirecting. */
+    private function guardedCatalogOrRefuse(bool $toDirectory): ?array
+    {
+        try {
+            return $this->guardedCatalog();
+        } catch (ModMenuException $e) {
+            $this->flash->failure($e->getMessage());
+            $toDirectory ? $this->backToDirectory() : $this->backToInstalled();
+            return null;
+        }
+    }
+
+    /**
+     * The private source a plugin's dependencies must come from: its catalog
+     * entry's source when installing, its binding when enabling.
+     */
+    private function dependencySource(string $name, string $action, array $catalog): ?string
+    {
+        if ($action === 'install') {
+            $entry = self::catalogEntry($catalog, $name);
+            return ! empty($entry['private']) && is_string($entry['source_id'] ?? null) ? $entry['source_id'] : null;
+        }
+        $key = PluginName::key($name);
+        try {
+            return $key === null ? null : ((new PrivateState($this->container))->read()['bindings'][$key] ?? null);
+        } catch (PrivateStateDamaged $e) {
+            return null;
+        }
+    }
+
+    /**
+     * The private fetcher (R1). Typed object, as in DirectoryClient and
+     * PluginManager: tests inject duck-typed fakes under modMenuPrivateFetcher.
+     */
+    private function privateFetcher(): object
+    {
+        return $this->container['modMenuPrivateFetcher'] ?? new PrivateFetcher($this->container);
+    }
+
+    /**
+     * The catalog entry that is the same plugin as $name (PluginName::key),
+     * or []. Lookups only find the entry; the manager refuses an install
+     * whose name is not the entry's own name byte for byte (R17).
+     */
+    private static function catalogEntry(array $catalog, string $name): array
+    {
+        $found = PluginName::find($catalog, $name);
+        $entry = $found === null ? null : $catalog[$found];
+        return is_array($entry) ? $entry : [];
+    }
+
+    /**
+     * R17, before any conflict prompt, conflict disabling or dependency step:
+     * a posted name whose catalog entry (found by key) has another `name` is
+     * refused with a failure flash and a return to Browse. True when refused.
+     */
+    private function refuseMisspelled(array $catalog, string $name): bool
+    {
+        $found = PluginName::find($catalog, $name);
+        if ($found === null) {
+            return false;
+        }
+        $listed = $catalog[$found]['name'] ?? $found;
+        $listed = is_string($listed) ? $listed : $found;
+        if ($listed === $name) {
+            return false;
+        }
+        $this->flash->failure(t(PluginManager::LISTED_AS, $listed, $name));
+        $this->backToDirectory();
+        return true;
     }
 
     private function requiresFor(string $name, string $action, array $catalog, PluginManager $manager): array
     {
         if ($action === 'install') {
-            return $catalog[$name]['requires'] ?? [];
+            return self::catalogEntry($catalog, $name)['requires'] ?? [];
         }
         $deps = $manager->installedPluginsDeps();
         return $deps[$name]['requires'] ?? [];
@@ -463,7 +850,7 @@ class ModMenuController extends BaseController
      * Forward gate for enable/install: act directly when satisfied, block when a
      * requirement is unresolvable, otherwise render the resolve-plan confirmation.
      */
-    private function forwardOrConfirm(string $name, string $action, string $target, ?array $catalog = null, string $notice = ''): void
+    private function forwardOrConfirm(string $name, string $action, string $target, ?array $catalog = null, string $notice = '', ?MutationGuard $guard = null): void
     {
         $manager  = $this->manager();
         $catalog  = $catalog ?? $this->catalog();
@@ -472,14 +859,14 @@ class ModMenuController extends BaseController
 
         // Resolve the target's own download URL when installing without one.
         if ($action === 'install' && $target === '') {
-            $target = (string) ($catalog[$name]['download'] ?? '');
+            $target = (string) (self::catalogEntry($catalog, $name)['download'] ?? '');
         }
 
-        $check = $manager->forwardCheck($requires, $catalog);
+        $check = $manager->forwardCheck($requires, $catalog, null, $this->dependencySource($name, $action, $catalog));
 
         if ($check['satisfied']) {
-            $this->runAndFlash(function (PluginManager $m) use ($name, $action, $target, $catalog) {
-                $m->setCatalog($catalog);
+            $this->runAndFlash(function (PluginManager $m) use ($name, $action, $target, $catalog, $guard) {
+                $m->setCatalog($catalog, $guard);
                 $action === 'install' ? $m->installFromUrl($target, $name) : $m->enable($name);
             }, $prefix . ($action === 'install' ? t('Plugin installed.') : t('Plugin enabled.')), $name);
             $action === 'install' ? $this->backToDirectory() : $this->backToInstalled();
@@ -487,7 +874,7 @@ class ModMenuController extends BaseController
         }
 
         if ($check['blocked']) {
-            $this->flash->failure($prefix . t('"%s" has requirements that cannot be installed automatically. Install them manually first.', $name));
+            $this->flash->failure($prefix . t('"%s" has requirements that cannot be installed automatically. Install them manually first.', $name) . self::unresolvableNote($check['plan']));
             $action === 'install' ? $this->backToDirectory() : $this->backToInstalled();
             return;
         }
@@ -501,6 +888,21 @@ class ModMenuController extends BaseController
             'action' => $action,
             'plan'   => $check['plan'],
         ]));
+    }
+
+    /**
+     * " Needed: A, B (Install it yourself first)." for a plan's unresolvable
+     * steps; the reason names a dependency a private plugin's source does not list.
+     */
+    private static function unresolvableNote(array $plan): string
+    {
+        $needed = [];
+        foreach ($plan as $step) {
+            if (($step['action'] ?? null) === 'unresolvable') {
+                $needed[] = empty($step['reason']) ? $step['plugin'] : $step['plugin'] . ' (' . t($step['reason']) . ')';
+            }
+        }
+        return $needed === [] ? '' : ' ' . t('Needed: %s.', implode(', ', $needed));
     }
 
     /**
@@ -525,6 +927,11 @@ class ModMenuController extends BaseController
     private function backToDirectory()
     {
         $this->response->redirect($this->helper->url->to('ModMenuController', 'directory', ['plugin' => 'ModMenu']));
+    }
+
+    private function backToSources()
+    {
+        $this->response->redirect($this->helper->url->to('ModMenuController', 'sources', ['plugin' => 'ModMenu']));
     }
 
     /**

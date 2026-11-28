@@ -4,6 +4,8 @@ namespace Kanboard\Plugin\ModMenu\Controller;
 
 use Kanboard\Controller\BaseController;
 use Kanboard\Core\Controller\AccessForbiddenException;
+use Kanboard\Plugin\ModMenu\Model\DirectoryClient;
+use Kanboard\Plugin\ModMenu\Model\MutationGuard;
 use Kanboard\Plugin\ModMenu\Model\PluginManager;
 use Kanboard\Plugin\ModMenu\Exception\ModMenuException;
 
@@ -26,7 +28,7 @@ class UploadController extends BaseController
             return;
         }
 
-        $manager = new PluginManager($this->container);
+        $manager = $this->manager();
         $this->response->html($this->helper->layout->config('ModMenu:settings/upload', [
             'title' => t('ModMenu'),
             'tab' => 'upload',
@@ -48,12 +50,23 @@ class UploadController extends BaseController
         }
 
         try {
-            $manager = new PluginManager($this->container);
+            // No catalog entry, but bound plugins, reachability and a frozen state still refuse it.
+            $guard = MutationGuard::forUnlistedInstall(
+                $this->container,
+                fn () => (new DirectoryClient($this->container))->catalogResult()
+            );
+            $guard->assertCanStart();
+            $manager = $this->manager()->setCatalog([], $guard);
             $name = $manager->installFromFile($file['tmp_name']);
             $warning = $manager->conflictWarning($name);
             $this->flash->success(trim(t('Plugin "%s" installed.', $name) . ' ' . $warning));
         } catch (ModMenuException $e) {
             $this->flash->failure($e->getMessage());
         }
+    }
+
+    protected function manager(): PluginManager
+    {
+        return new PluginManager($this->container);
     }
 }

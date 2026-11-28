@@ -20,6 +20,18 @@ class StylesheetTest extends TestCase
         $this->assertGreaterThan(0, $checked);
     }
 
+    // Lists nested in a Sources-page card (bound / unbound plugins) keep their bullets inside the card's border.
+    public function testListsInsideACardAreIndentedPastItsBorder()
+    {
+        foreach ($this->rules() as [, $selector, $body]) {
+            if (in_array('.modmenu-sources .modmenu-card ul', array_map('trim', explode(',', $selector)), true)) {
+                $this->assertMatchesRegularExpression('/(^|;)\s*padding-left\s*:\s*[1-9]/', $body);
+                return;
+            }
+        }
+        $this->fail('no .modmenu-sources .modmenu-card ul rule');
+    }
+
     private function rules(): array
     {
         preg_match_all('/([^{}]+)\{([^}]*)\}/', file_get_contents(__DIR__.'/../Assets/css/modmenu.css'), $rules, PREG_SET_ORDER);
